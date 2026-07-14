@@ -15,6 +15,11 @@ import {
 } from '@/features/media/upload-ui-state';
 import type {EvidenceItem} from '@/features/evidence/schemas';
 import type {Question, Storyboard} from '@/features/story/story-service';
+import {
+  displayEvidenceClaim,
+  mergeStoryboardResponse,
+  serializeSceneEdit
+} from '@/features/story/storyboard-editor-state';
 
 type ImageDraft = {
   file: File;
@@ -73,6 +78,7 @@ export default function ProjectPage({
   const [corrections, setCorrections] = useState<Record<string, string>>({});
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const draggedSceneId = useRef<string | null>(null);
+  const dirtySceneIds = useRef(new Set<string>());
   const previewUrls = useRef<string[]>([]);
 
   useEffect(
@@ -281,6 +287,7 @@ export default function ProjectPage({
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action: 'compose'})
     });
     if (!response.ok) return setMessage('Confirm at least one detail before shaping the film.');
+    dirtySceneIds.current.clear();
     setStoryboard(await response.json());
     setMessage('Your film outline is ready to review.');
   };
@@ -297,38 +304,46 @@ export default function ProjectPage({
     if (!storyboard) return;
     const scene = storyboard.scenes.find((entry) => entry.id === sceneId);
     if (!scene) return;
-    const change = {
-      sceneType: scene.sceneType, title: scene.title, narrationText: scene.narrationText,
-      captionText: scene.captionText, durationSeconds: scene.durationSeconds,
-      assetIds: scene.assetIds, evidenceItemIds: scene.evidenceItemIds,
-      motionPreset: scene.motionPreset, transitionPreset: scene.transitionPreset
-    };
+    const change = serializeSceneEdit(scene);
     const response = await fetch(`/api/projects/${projectId}/storyboard`, {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action: 'edit_scene', storyboardId: storyboard.id, sceneId, change})
+      body: JSON.stringify({action: 'edit_scene', storyboardId: storyboard.id, sceneId, change, expectedRevision: storyboard.revision})
     });
     if (!response.ok) return setMessage('That scene could not be saved.');
-    setStoryboard(await response.json()); setMessage('Scene saved.');
+    const incoming = await response.json() as Storyboard;
+    dirtySceneIds.current.delete(sceneId);
+    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, dirtySceneIds.current) : incoming);
+    setMessage('Scene saved.');
   };
 
   const regenerateScene = async (sceneId: string) => {
     if (!storyboard) return;
     const response = await fetch(`/api/projects/${projectId}/storyboard`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action: 'regenerate_scene', storyboardId: storyboard.id, sceneId})
+      body: JSON.stringify({action: 'regenerate_scene', storyboardId: storyboard.id, sceneId, expectedRevision: storyboard.revision})
     });
     if (!response.ok) return setMessage('That scene could not be reshaped.');
-    setStoryboard(await response.json()); setMessage('Only the selected scene was reshaped.');
+    const incoming = await response.json() as Storyboard;
+    dirtySceneIds.current.delete(sceneId);
+    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, dirtySceneIds.current) : incoming);
+    setMessage('Only the selected scene was reshaped.');
   };
 
   const saveOrder = async () => {
     if (!storyboard) return;
     const response = await fetch(`/api/projects/${projectId}/storyboard`, {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action: 'reorder_scenes', storyboardId: storyboard.id, orderedSceneIds: storyboard.scenes.map((scene) => scene.id)})
+      body: JSON.stringify({action: 'reorder_scenes', storyboardId: storyboard.id, orderedSceneIds: storyboard.scenes.map((scene) => scene.id), expectedRevision: storyboard.revision})
     });
     if (!response.ok) return setMessage('The scene order could not be saved.');
-    setStoryboard(await response.json()); setMessage('Scene order saved.');
+    const incoming = await response.json() as Storyboard;
+    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, dirtySceneIds.current) : incoming);
+    setMessage('Scene order saved.');
+  };
+
+  const updateSceneDraft = (sceneId: string, change: Partial<Storyboard['scenes'][number]>) => {
+    dirtySceneIds.current.add(sceneId);
+    setStoryboard((current) => current && ({...current, scenes: current.scenes.map((scene) => scene.id === sceneId ? {...scene, ...change} : scene)}));
   };
 
   const moveScene = (sceneId: string, offset: number) => setStoryboard((current) => {
@@ -467,9 +482,10 @@ export default function ProjectPage({
 
         {evidence.length > 0 && <section aria-labelledby="record-title">
           <h3 id="record-title">Review the record</h3>
-          {evidence.map((item) => <article key={item.id} className="record-card">
+          {evidence.map((item) => { const display = displayEvidenceClaim(item); return <article key={item.id} className="record-card">
             <p>{item.kind === 'model_hypothesis' || item.verificationStatus === 'proposed' ? <strong>Needs your help</strong> : <strong>{item.verificationStatus}</strong>}</p>
-            <p>{item.claim}</p>
+            <p>{display.current}</p>
+            {display.originallyProposed && <p><small>Originally proposed: {display.originallyProposed}</small></p>}
             {item.verificationStatus === 'proposed' && <>
               <button type="button" onClick={() => reviewEvidence(item, 'confirm')}>Confirm fact</button>
               <label>Correction
@@ -478,7 +494,7 @@ export default function ProjectPage({
               <button type="button" disabled={!corrections[item.id]?.trim()} onClick={() => reviewEvidence(item, 'correct')}>Save correction</button>
               <button type="button" onClick={() => reviewEvidence(item, 'reject')}>Reject suggestion</button>
             </>}
-          </article>)}
+          </article>; })}
         </section>}
 
         {questions.length > 0 && <section aria-labelledby="questions-title">
@@ -513,9 +529,21 @@ export default function ProjectPage({
               <span aria-label={`Drag scene ${index + 1}`}>↕ Scene {index + 1}</span>
               <button type="button" disabled={index === 0} onClick={() => moveScene(scene.id, -1)} aria-label={`Move scene ${index + 1} earlier`}>Move earlier</button>
               <button type="button" disabled={index === storyboard.scenes.length - 1} onClick={() => moveScene(scene.id, 1)} aria-label={`Move scene ${index + 1} later`}>Move later</button>
-              <label>Scene title<input value={scene.title} onChange={(event) => setStoryboard((current) => current && ({...current, scenes: current.scenes.map((entry) => entry.id === scene.id ? {...entry, title: event.target.value} : entry)}))} /></label>
-              <label>Narration<textarea value={scene.narrationText} onChange={(event) => setStoryboard((current) => current && ({...current, scenes: current.scenes.map((entry) => entry.id === scene.id ? {...entry, narrationText: event.target.value} : entry)}))} /></label>
-              <label>Caption<input value={scene.captionText} onChange={(event) => setStoryboard((current) => current && ({...current, scenes: current.scenes.map((entry) => entry.id === scene.id ? {...entry, captionText: event.target.value} : entry)}))} /></label>
+              <label>Scene type<select value={scene.sceneType} onChange={(event) => updateSceneDraft(scene.id, {sceneType: event.target.value as typeof scene.sceneType})}>
+                {['title', 'media', 'original_audio', 'dedication', 'credits'].map((value) => <option key={value} value={value}>{value.replace('_', ' ')}</option>)}
+              </select></label>
+              <label>Scene title<input value={scene.title} onChange={(event) => updateSceneDraft(scene.id, {title: event.target.value})} /></label>
+              <label>Narration<textarea value={scene.narrationText} onChange={(event) => updateSceneDraft(scene.id, {narrationText: event.target.value})} /></label>
+              <label>Caption<input value={scene.captionText} onChange={(event) => updateSceneDraft(scene.id, {captionText: event.target.value})} /></label>
+              <label>Duration in seconds<input type="number" min="1" max="240" step="0.5" value={scene.durationSeconds} onChange={(event) => updateSceneDraft(scene.id, {durationSeconds: Number(event.target.value)})} /></label>
+              <label>Asset IDs (comma separated)<input value={scene.assetIds.join(', ')} onChange={(event) => updateSceneDraft(scene.id, {assetIds: event.target.value.split(',').map((value) => value.trim()).filter(Boolean)})} /></label>
+              <label>Evidence IDs (comma separated)<input value={scene.evidenceItemIds.join(', ')} onChange={(event) => updateSceneDraft(scene.id, {evidenceItemIds: event.target.value.split(',').map((value) => value.trim()).filter(Boolean)})} /></label>
+              <label>Motion<select value={scene.motionPreset} onChange={(event) => updateSceneDraft(scene.id, {motionPreset: event.target.value as typeof scene.motionPreset})}>
+                {['hold', 'slow_zoom_in', 'slow_pan_left', 'slow_pan_right'].map((value) => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}
+              </select></label>
+              <label>Transition<select value={scene.transitionPreset} onChange={(event) => updateSceneDraft(scene.id, {transitionPreset: event.target.value as typeof scene.transitionPreset})}>
+                {['crossfade', 'fade_to_black'].map((value) => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}
+              </select></label>
               <button type="button" onClick={() => saveScene(scene.id)}>Save scene</button>
               <button type="button" onClick={() => regenerateScene(scene.id)}>Regenerate this scene</button>
             </li>)}

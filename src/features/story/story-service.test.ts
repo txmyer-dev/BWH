@@ -84,6 +84,20 @@ describe('StoryService guardrails', () => {
     await expect(service.composeStoryboard(projectId)).rejects.toThrow('APPROVED_EVIDENCE_REQUIRED');
   });
 
+  it('feeds corrected evidence to story composition only as the effective corrected fact', async () => {
+    const corrected = approved({claim: 'The bakery opened in 1962.', originalClaim: 'The bakery opened in 1962.', verificationStatus: 'corrected', correction: 'The bakery opened in 1964.'});
+    let received: unknown;
+    const agent = createAgent();
+    agent.composeStoryboard = async (input) => {
+      received = input.approvedEvidence;
+      return createAgent().composeStoryboard(input);
+    };
+    const service = new StoryService(new InMemoryStoryRepository(), agent, {listByProject: async () => [corrected]}, async () => undefined);
+    await service.composeStoryboard(projectId);
+    expect(received).toEqual([expect.objectContaining({claim: 'The bakery opened in 1964.'})]);
+    expect(JSON.stringify(received)).not.toContain('1962');
+  });
+
   it('rejects factual narration and voice traits without project-owned approved evidence', async () => {
     const foreign = approved({id: crypto.randomUUID(), projectId: otherProjectId});
     const agent = createAgent();
@@ -103,12 +117,12 @@ describe('StoryService guardrails', () => {
     const extra = await service.addScene(projectId, storyboard.id, {
       sceneType: 'dedication', title: 'For our family', narrationText: '', captionText: 'With love',
       durationSeconds: 10, assetIds: [], evidenceItemIds: [], motionPreset: 'hold', transitionPreset: 'fade_to_black'
-    });
-    await service.editScene(projectId, storyboard.id, extra.id, {captionText: 'Creator-written dedication'});
+    }, storyboard.revision);
+    await service.editScene(projectId, storyboard.id, extra.scene.id, {captionText: 'Creator-written dedication'}, extra.storyboard.revision);
     const before = await service.getStoryboard(projectId);
-    const regenerated = await service.regenerateScene(projectId, storyboard.id, storyboard.scenes[0].id);
+    const regenerated = await service.regenerateScene(projectId, storyboard.id, storyboard.scenes[0].id, before!.revision);
     expect(regenerated.scenes.map((scene) => scene.id)).toEqual(before?.scenes.map((scene) => scene.id));
-    expect(regenerated.scenes[1]).toMatchObject({id: extra.id, captionText: 'Creator-written dedication'});
+    expect(regenerated.scenes[1]).toMatchObject({id: extra.scene.id, captionText: 'Creator-written dedication'});
     expect(regenerated.scenes[0].title).toBe('A revised opening');
   });
 
@@ -118,7 +132,7 @@ describe('StoryService guardrails', () => {
 
     const first = createService([approved()]);
     const storyboard = await first.service.composeStoryboard(projectId);
-    await expect(first.service.editScene(otherProjectId, storyboard.id, storyboard.scenes[0].id, {title: 'No'})).rejects.toThrow('STORYBOARD_NOT_FOUND');
+    await expect(first.service.editScene(otherProjectId, storyboard.id, storyboard.scenes[0].id, {title: 'No'}, storyboard.revision)).rejects.toThrow('STORYBOARD_NOT_FOUND');
   });
 
   it('rejects narration edits without approved provenance and cross-project asset IDs', async () => {
@@ -128,9 +142,37 @@ describe('StoryService guardrails', () => {
     await expect(service.addScene(projectId, storyboard.id, {
       sceneType: 'media', title: 'Unsupported', narrationText: 'A new factual claim.', captionText: '', durationSeconds: 5,
       assetIds: [crypto.randomUUID()], evidenceItemIds: [], motionPreset: 'hold', transitionPreset: 'crossfade'
-    })).rejects.toThrow('NARRATION_EVIDENCE_REQUIRED');
+    }, storyboard.revision)).rejects.toThrow('NARRATION_EVIDENCE_REQUIRED');
     await expect(service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {
       assetIds: [crypto.randomUUID()]
-    })).rejects.toThrow('CROSS_PROJECT_ASSET');
+    }, storyboard.revision)).rejects.toThrow('CROSS_PROJECT_ASSET');
+  });
+
+  it('rejects a slow regeneration when an intervening explicit edit advances the revision', async () => {
+    const fact = approved();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const agent = createAgent();
+    agent.regenerateScene = async (input) => { await gate; return {...input.scene, title: 'Stale regeneration'}; };
+    const repository = new InMemoryStoryRepository();
+    const service = new StoryService(repository, agent, {listByProject: async () => [fact]}, async () => undefined);
+    const storyboard = await service.composeStoryboard(projectId);
+    const regenerating = service.regenerateScene(projectId, storyboard.id, storyboard.scenes[0].id, storyboard.revision);
+    const edited = await service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {title: 'Intervening edit'}, storyboard.revision);
+    release();
+    await expect(regenerating).rejects.toThrow('STORYBOARD_CONFLICT');
+    expect((await service.getStoryboard(projectId))?.scenes[0].title).toBe('Intervening edit');
+    expect(edited.revision).toBe(storyboard.revision + 1);
+  });
+
+  it('rejects stale scene saves and reorders without overwriting newer work', async () => {
+    const {service} = createService([approved()]);
+    const storyboard = await service.composeStoryboard(projectId);
+    const extra = await service.addScene(projectId, storyboard.id, {
+      sceneType: 'dedication', title: 'End', narrationText: '', captionText: '', durationSeconds: 5,
+      assetIds: [], evidenceItemIds: [], motionPreset: 'hold', transitionPreset: 'fade_to_black'
+    }, storyboard.revision);
+    await expect(service.editScene(projectId, storyboard.id, extra.scene.id, {title: 'Stale'}, storyboard.revision)).rejects.toThrow('STORYBOARD_CONFLICT');
+    await expect(service.reorderScenes(projectId, storyboard.id, [extra.scene.id, storyboard.scenes[0].id], storyboard.revision)).rejects.toThrow('STORYBOARD_CONFLICT');
   });
 });

@@ -112,6 +112,7 @@ CREATE TABLE "storyboards" (
 	"narrator_voice" varchar(80),
 	"creator_narration_asset_id" uuid,
 	"target_duration_seconds" integer DEFAULT 180 NOT NULL,
+	"revision" integer DEFAULT 0 NOT NULL,
 	"render_manifest" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL

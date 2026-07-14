@@ -29,15 +29,20 @@ export type VoiceProfile = {traits: VoiceTrait[]; coverage: 'grounded' | 'restra
 export type Question = {id: string; projectId: string; question: string; reason: string; rank: number; leading: false};
 export type Storyboard = {
   id: string; projectId: string; title: string; theme: string;
-  targetDurationSeconds: number; voiceProfile: VoiceProfile; scenes: FilmScene[];
+  targetDurationSeconds: number; voiceProfile: VoiceProfile; revision: number; scenes: FilmScene[];
 };
-type StoryboardCreate = Omit<Storyboard, 'id' | 'projectId' | 'scenes'> & {scenes: FilmSceneInput[]};
+type StoryboardCreate = Omit<Storyboard, 'id' | 'projectId' | 'revision' | 'scenes'> & {scenes: FilmSceneInput[]};
 
 export type QuestionDraft = {question: string; reason: string; rank: number; leading: boolean};
 export type AgentScene = Omit<FilmSceneInput, 'narrationText' | 'evidenceItemIds'> & {
   narrationSentences: {text: string; evidenceItemIds: string[]}[];
 };
 export type StoryboardDraft = {title: string; theme: string; voiceProfile: VoiceProfile; scenes: AgentScene[]};
+export type StoryEvidence = {
+  id: string; projectId: string; kind: EvidenceItem['kind']; claim: string;
+  sourceAssetIds: string[]; sourceExcerpt: string;
+};
+export type StoryQuestionEvidence = StoryEvidence & {verificationStatus: EvidenceItem['verificationStatus']};
 
 export const questionDraftsSchema = z.array(z.object({
   question: z.string().min(1), reason: z.string().min(1), rank: z.number().int().positive(), leading: z.boolean()
@@ -61,9 +66,9 @@ export const storyboardDraftSchema = z.object({
 }).strict();
 
 export interface StoryGuideAgent {
-  generateQuestions(input: {projectId: string; evidence: EvidenceItem[]}): Promise<QuestionDraft[]>;
-  composeStoryboard(input: {projectId: string; approvedEvidence: EvidenceItem[]}): Promise<StoryboardDraft>;
-  regenerateScene(input: {projectId: string; scene: AgentScene; approvedEvidence: EvidenceItem[]}): Promise<AgentScene>;
+  generateQuestions(input: {projectId: string; evidence: StoryQuestionEvidence[]}): Promise<QuestionDraft[]>;
+  composeStoryboard(input: {projectId: string; approvedEvidence: StoryEvidence[]}): Promise<StoryboardDraft>;
+  regenerateScene(input: {projectId: string; scene: AgentScene; approvedEvidence: StoryEvidence[]}): Promise<AgentScene>;
 }
 
 export interface StoryRepository {
@@ -72,14 +77,24 @@ export interface StoryRepository {
   saveAnswer(projectId: string, questionId: string, answer: string): Promise<void>;
   findStoryboard(projectId: string): Promise<Storyboard | undefined>;
   createStoryboard(projectId: string, draft: StoryboardCreate): Promise<Storyboard>;
-  addScene(projectId: string, storyboardId: string, scene: FilmSceneInput): Promise<FilmScene>;
-  editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>): Promise<Storyboard>;
-  reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[]): Promise<Storyboard>;
-  replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput): Promise<Storyboard>;
+  addScene(projectId: string, storyboardId: string, scene: FilmSceneInput, expectedRevision: number): Promise<{scene: FilmScene; storyboard: Storyboard}>;
+  editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>, expectedRevision: number): Promise<Storyboard>;
+  reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[], expectedRevision: number): Promise<Storyboard>;
+  replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput, expectedRevision: number): Promise<Storyboard>;
 }
 
 type EvidenceReader = {listByProject(projectId: string): Promise<EvidenceItem[]>};
 const isApproved = (item: EvidenceItem) => item.kind !== 'model_hypothesis' && (item.verificationStatus === 'confirmed' || item.verificationStatus === 'corrected');
+export const effectiveEvidenceClaim = (item: EvidenceItem) => {
+  if (item.verificationStatus !== 'corrected') return item.claim;
+  if (!item.correction?.trim()) throw new Error('CORRECTED_EVIDENCE_INVALID');
+  return item.correction;
+};
+const toStoryEvidence = (item: EvidenceItem): StoryEvidence => ({
+  id: item.id, projectId: item.projectId, kind: item.kind,
+  claim: effectiveEvidenceClaim(item), sourceAssetIds: [...item.sourceAssetIds],
+  sourceExcerpt: item.verificationStatus === 'corrected' ? `Creator correction: ${effectiveEvidenceClaim(item)}` : item.sourceExcerpt
+});
 
 export class StoryService {
   constructor(
@@ -95,7 +110,8 @@ export class StoryService {
     if (existing.length) return existing;
     const evidence = await this.evidence.listByProject(projectId);
     if (evidence.some((item) => item.projectId !== projectId)) throw new Error('CROSS_PROJECT_EVIDENCE');
-    const drafts = (await this.agent.generateQuestions({projectId, evidence}))
+    const questionEvidence = evidence.map((item) => ({...toStoryEvidence(item), verificationStatus: item.verificationStatus}));
+    const drafts = (await this.agent.generateQuestions({projectId, evidence: questionEvidence}))
       .filter((question) => !question.leading)
       .sort((left, right) => left.rank - right.rank)
       .slice(0, 5)
@@ -131,17 +147,17 @@ export class StoryService {
     return this.repository.findStoryboard(projectId);
   }
 
-  async addScene(projectId: string, storyboardId: string, input: FilmSceneInput) {
+  async addScene(projectId: string, storyboardId: string, input: FilmSceneInput, expectedRevision: number) {
     await this.assertCreator(projectId);
     const scene = filmSceneInputSchema.parse(input);
     const board = await this.repository.findStoryboard(projectId);
     if (!board || board.id !== storyboardId) throw new Error('STORYBOARD_NOT_FOUND');
     await this.assertSceneReferences(projectId, scene);
     this.assertDuration([...board.scenes, {...scene, id: randomUUID(), sequenceOrder: board.scenes.length}]);
-    return this.repository.addScene(projectId, storyboardId, scene);
+    return this.repository.addScene(projectId, storyboardId, scene, expectedRevision);
   }
 
-  async editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>) {
+  async editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>, expectedRevision: number) {
     await this.assertCreator(projectId);
     const board = await this.repository.findStoryboard(projectId);
     if (!board || board.id !== storyboardId) throw new Error('STORYBOARD_NOT_FOUND');
@@ -156,18 +172,19 @@ export class StoryService {
     const merged = filmSceneInputSchema.parse({...currentInput, ...change});
     await this.assertSceneReferences(projectId, merged);
     this.assertDuration(board.scenes.map((scene) => scene.id === sceneId ? {...merged, id: scene.id, sequenceOrder: scene.sequenceOrder} : scene));
-    return this.repository.editScene(projectId, storyboardId, sceneId, change);
+    return this.repository.editScene(projectId, storyboardId, sceneId, change, expectedRevision);
   }
 
-  async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[]) {
+  async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[], expectedRevision: number) {
     await this.assertCreator(projectId);
-    return this.repository.reorderScenes(projectId, storyboardId, orderedSceneIds);
+    return this.repository.reorderScenes(projectId, storyboardId, orderedSceneIds, expectedRevision);
   }
 
-  async regenerateScene(projectId: string, storyboardId: string, sceneId: string) {
+  async regenerateScene(projectId: string, storyboardId: string, sceneId: string, expectedRevision: number) {
     await this.assertCreator(projectId);
     const storyboard = await this.repository.findStoryboard(projectId);
     if (!storyboard || storyboard.id !== storyboardId) throw new Error('STORYBOARD_NOT_FOUND');
+    if (storyboard.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
     const scene = storyboard.scenes.find((candidate) => candidate.id === sceneId);
     if (!scene) throw new Error('SCENE_NOT_FOUND');
     const approvedEvidence = await this.approvedEvidence(projectId);
@@ -184,16 +201,16 @@ export class StoryService {
     const next = this.flattenAgentScene(regenerated, approvedEvidence);
     await this.assertSceneReferences(projectId, next);
     this.assertDuration(storyboard.scenes.map((candidate) => candidate.id === sceneId ? {...next, id: candidate.id, sequenceOrder: candidate.sequenceOrder} : candidate));
-    return this.repository.replaceScene(projectId, storyboardId, sceneId, next);
+    return this.repository.replaceScene(projectId, storyboardId, sceneId, next, expectedRevision);
   }
 
   private async approvedEvidence(projectId: string) {
     const all = await this.evidence.listByProject(projectId);
     if (all.some((item) => item.projectId !== projectId)) throw new Error('CROSS_PROJECT_EVIDENCE');
-    return all.filter(isApproved);
+    return all.filter(isApproved).map(toStoryEvidence);
   }
 
-  private validateVoiceProfile(profile: VoiceProfile, approved: EvidenceItem[]) {
+  private validateVoiceProfile(profile: VoiceProfile, approved: StoryEvidence[]) {
     const ids = new Set(approved.map((item) => item.id));
     for (const trait of profile.traits) {
       if (!trait.evidenceItemIds.length || trait.evidenceItemIds.some((id) => !ids.has(id))) {
@@ -203,7 +220,7 @@ export class StoryService {
     return profile;
   }
 
-  private flattenAgentScene(scene: AgentScene, approved: EvidenceItem[]): FilmSceneInput {
+  private flattenAgentScene(scene: AgentScene, approved: StoryEvidence[]): FilmSceneInput {
     const approvedIds = new Set(approved.map((item) => item.id));
     const allowedAssets = new Set(approved.flatMap((item) => item.sourceAssetIds));
     if (scene.assetIds.some((id) => !allowedAssets.has(id))) throw new Error('CROSS_PROJECT_ASSET');
@@ -258,37 +275,45 @@ export class InMemoryStoryRepository implements StoryRepository {
   async findStoryboard(projectId: string) { const found = this.boards.get(projectId); return found ? cloneStoryboard(found) : undefined; }
   async createStoryboard(projectId: string, draft: StoryboardCreate) {
     const existing = this.boards.get(projectId); if (existing) return cloneStoryboard(existing);
-    const board: Storyboard = {...draft, id: randomUUID(), projectId, scenes: draft.scenes.map((scene, sequenceOrder) => ({...scene, id: randomUUID(), sequenceOrder}))};
+    const board: Storyboard = {...draft, id: randomUUID(), projectId, revision: 0, scenes: draft.scenes.map((scene, sequenceOrder) => ({...scene, id: randomUUID(), sequenceOrder}))};
     this.boards.set(projectId, board); return cloneStoryboard(board);
   }
-  async addScene(projectId: string, storyboardId: string, scene: FilmSceneInput) {
-    const board = this.requireBoard(projectId, storyboardId); const added = {...scene, id: randomUUID(), sequenceOrder: board.scenes.length};
+  async addScene(projectId: string, storyboardId: string, scene: FilmSceneInput, expectedRevision: number) {
+    const board = this.requireRevision(projectId, storyboardId, expectedRevision); const added = {...scene, id: randomUUID(), sequenceOrder: board.scenes.length};
     board.scenes.push(added); board.targetDurationSeconds += added.durationSeconds;
-    return {...added, assetIds: [...added.assetIds], evidenceItemIds: [...added.evidenceItemIds]};
+    board.revision += 1;
+    return {scene: {...added, assetIds: [...added.assetIds], evidenceItemIds: [...added.evidenceItemIds]}, storyboard: cloneStoryboard(board)};
   }
-  async editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>) {
-    const board = this.requireBoard(projectId, storyboardId); const index = board.scenes.findIndex((scene) => scene.id === sceneId);
+  async editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>, expectedRevision: number) {
+    const board = this.requireRevision(projectId, storyboardId, expectedRevision); const index = board.scenes.findIndex((scene) => scene.id === sceneId);
     if (index < 0) throw new Error('SCENE_NOT_FOUND');
     board.scenes[index] = {...board.scenes[index], ...change};
     board.targetDurationSeconds = board.scenes.reduce((total, scene) => total + scene.durationSeconds, 0);
+    board.revision += 1;
     return cloneStoryboard(board);
   }
-  async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[]) {
-    const board = this.requireBoard(projectId, storyboardId);
+  async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[], expectedRevision: number) {
+    const board = this.requireRevision(projectId, storyboardId, expectedRevision);
     if (orderedSceneIds.length !== board.scenes.length || new Set(orderedSceneIds).size !== board.scenes.length) throw new Error('INVALID_SCENE_ORDER');
     const byId = new Map(board.scenes.map((scene) => [scene.id, scene]));
     if (orderedSceneIds.some((id) => !byId.has(id))) throw new Error('INVALID_SCENE_ORDER');
-    board.scenes = orderedSceneIds.map((id, sequenceOrder) => ({...byId.get(id)!, sequenceOrder})); return cloneStoryboard(board);
+    board.scenes = orderedSceneIds.map((id, sequenceOrder) => ({...byId.get(id)!, sequenceOrder})); board.revision += 1; return cloneStoryboard(board);
   }
-  async replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput) {
-    const board = this.requireBoard(projectId, storyboardId); const index = board.scenes.findIndex((candidate) => candidate.id === sceneId);
+  async replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput, expectedRevision: number) {
+    const board = this.requireRevision(projectId, storyboardId, expectedRevision); const index = board.scenes.findIndex((candidate) => candidate.id === sceneId);
     if (index < 0) throw new Error('SCENE_NOT_FOUND');
     board.scenes[index] = {...scene, id: sceneId, sequenceOrder: board.scenes[index].sequenceOrder};
     board.targetDurationSeconds = board.scenes.reduce((total, candidate) => total + candidate.durationSeconds, 0);
+    board.revision += 1;
     return cloneStoryboard(board);
   }
   private requireBoard(projectId: string, storyboardId: string) {
     const board = this.boards.get(projectId); if (!board || board.id !== storyboardId) throw new Error('STORYBOARD_NOT_FOUND'); return board;
+  }
+  private requireRevision(projectId: string, storyboardId: string, expectedRevision: number) {
+    const board = this.requireBoard(projectId, storyboardId);
+    if (board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
+    return board;
   }
 }
 
@@ -338,7 +363,7 @@ export class PostgresStoryRepository implements StoryRepository {
     if (!board) return undefined;
     const profile = await this.database.query.voiceProfiles.findFirst({where: (table, {eq: equals}) => equals(table.projectId, projectId)});
     const scenes = await this.database.query.filmScenes.findMany({where: (table, {eq: equals}) => equals(table.storyboardId, board.id), orderBy: (table) => asc(table.sequenceOrder)});
-    return {id: board.id, projectId, title: board.title, theme: board.theme, targetDurationSeconds: board.targetDurationSeconds, voiceProfile: profile?.profile as VoiceProfile ?? {traits: [], coverage: 'restrained'}, scenes: scenes.map(mapScene)};
+    return {id: board.id, projectId, title: board.title, theme: board.theme, targetDurationSeconds: board.targetDurationSeconds, voiceProfile: profile?.profile as VoiceProfile ?? {traits: [], coverage: 'restrained'}, revision: board.revision, scenes: scenes.map(mapScene)};
   }
   async createStoryboard(projectId: string, draft: StoryboardCreate) {
     await this.database.transaction(async (transaction) => {
@@ -352,51 +377,62 @@ export class PostgresStoryRepository implements StoryRepository {
     });
     return (await this.findStoryboard(projectId))!;
   }
-  async addScene(projectId: string, storyboardId: string, scene: FilmSceneInput) {
+  async addScene(projectId: string, storyboardId: string, scene: FilmSceneInput, expectedRevision: number) {
     await this.requireBoard(projectId, storyboardId);
     const [row] = await this.database.transaction(async (transaction) => {
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
+      const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
+      if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
       const current = await transaction.select().from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, scene.durationSeconds);
       if (total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
       const inserted = await transaction.insert(filmScenes).values({id: randomUUID(), storyboardId, sequenceOrder: current.length, ...scene}).returning();
-      await transaction.update(storyboards).set({targetDurationSeconds: total, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
+      await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
       return inserted;
     });
-    return mapScene(row);
+    return {scene: mapScene(row), storyboard: (await this.findStoryboard(projectId))!};
   }
-  async editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>) {
+  async editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>, expectedRevision: number) {
     await this.requireBoard(projectId, storyboardId);
     await this.database.transaction(async (transaction) => {
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
+      const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
+      if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
       const [updated] = await transaction.update(filmScenes).set(change).where(and(eq(filmScenes.id, sceneId), eq(filmScenes.storyboardId, storyboardId))).returning();
       if (!updated) throw new Error('SCENE_NOT_FOUND');
       const current = await transaction.select().from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, 0);
       if (total < 120 || total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
-      await transaction.update(storyboards).set({targetDurationSeconds: total, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
+      await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
     });
     return (await this.findStoryboard(projectId))!;
   }
-  async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[]) {
-    const board = await this.requireBoard(projectId, storyboardId);
-    if (orderedSceneIds.length !== board.scenes.length || new Set(orderedSceneIds).size !== board.scenes.length || orderedSceneIds.some((id) => !board.scenes.some((scene) => scene.id === id))) throw new Error('INVALID_SCENE_ORDER');
-    await this.database.transaction(async (transaction) => {
-      await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
-      for (const [sequenceOrder, id] of orderedSceneIds.entries()) await transaction.update(filmScenes).set({sequenceOrder}).where(and(eq(filmScenes.id, id), eq(filmScenes.storyboardId, storyboardId)));
-    });
-    return (await this.findStoryboard(projectId))!;
-  }
-  async replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput) {
+  async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[], expectedRevision: number) {
     await this.requireBoard(projectId, storyboardId);
     await this.database.transaction(async (transaction) => {
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
+      const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
+      if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
+      const current = await transaction.select({id: filmScenes.id}).from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
+      const currentIds = new Set(current.map((scene) => scene.id));
+      if (orderedSceneIds.length !== current.length || new Set(orderedSceneIds).size !== current.length || orderedSceneIds.some((id) => !currentIds.has(id))) throw new Error('INVALID_SCENE_ORDER');
+      for (const [sequenceOrder, id] of orderedSceneIds.entries()) await transaction.update(filmScenes).set({sequenceOrder}).where(and(eq(filmScenes.id, id), eq(filmScenes.storyboardId, storyboardId)));
+      await transaction.update(storyboards).set({revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
+    });
+    return (await this.findStoryboard(projectId))!;
+  }
+  async replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput, expectedRevision: number) {
+    await this.requireBoard(projectId, storyboardId);
+    await this.database.transaction(async (transaction) => {
+      await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
+      const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
+      if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
       const [updated] = await transaction.update(filmScenes).set(scene).where(and(eq(filmScenes.id, sceneId), eq(filmScenes.storyboardId, storyboardId))).returning();
       if (!updated) throw new Error('SCENE_NOT_FOUND');
       const current = await transaction.select().from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, 0);
       if (total < 120 || total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
-      await transaction.update(storyboards).set({targetDurationSeconds: total, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
+      await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
     });
     return (await this.findStoryboard(projectId))!;
   }

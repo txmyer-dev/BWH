@@ -10,16 +10,17 @@ import {OpenAIStoryAgent} from '@/features/story/openai-story-agent';
 import {filmSceneInputSchema, PostgresStoryRepository, StoryService} from '@/features/story/story-service';
 import {getDatabase} from '@/server/db/client';
 import {parseEnv} from '@/server/env';
+import {storyboardErrorStatus} from './response-status';
 
 type RouteContext = {params: Promise<{projectId: string}>};
 const postSchema = z.discriminatedUnion('action', [
   z.object({action: z.literal('compose')}).strict(),
-  z.object({action: z.literal('regenerate_scene'), storyboardId: z.string().uuid(), sceneId: z.string().uuid()}).strict(),
-  z.object({action: z.literal('add_scene'), storyboardId: z.string().uuid(), scene: filmSceneInputSchema}).strict()
+  z.object({action: z.literal('regenerate_scene'), storyboardId: z.string().uuid(), sceneId: z.string().uuid(), expectedRevision: z.number().int().nonnegative()}).strict(),
+  z.object({action: z.literal('add_scene'), storyboardId: z.string().uuid(), scene: filmSceneInputSchema, expectedRevision: z.number().int().nonnegative()}).strict()
 ]);
 const patchSchema = z.discriminatedUnion('action', [
-  z.object({action: z.literal('edit_scene'), storyboardId: z.string().uuid(), sceneId: z.string().uuid(), change: filmSceneInputSchema.partial()}).strict(),
-  z.object({action: z.literal('reorder_scenes'), storyboardId: z.string().uuid(), orderedSceneIds: z.array(z.string().uuid()).min(1)}).strict()
+  z.object({action: z.literal('edit_scene'), storyboardId: z.string().uuid(), sceneId: z.string().uuid(), change: filmSceneInputSchema.partial(), expectedRevision: z.number().int().nonnegative()}).strict(),
+  z.object({action: z.literal('reorder_scenes'), storyboardId: z.string().uuid(), orderedSceneIds: z.array(z.string().uuid()).min(1), expectedRevision: z.number().int().nonnegative()}).strict()
 ]);
 
 const createService = async (projectId: string) => {
@@ -36,7 +37,7 @@ const createService = async (projectId: string) => {
 
 const failure = (error: unknown) => {
   const code = error instanceof Error ? error.message : 'STORYBOARD_REQUEST_FAILED';
-  return NextResponse.json({error: code}, {status: code === 'PROJECT_FORBIDDEN' ? 403 : code.endsWith('NOT_FOUND') ? 404 : 400});
+  return NextResponse.json({error: code}, {status: storyboardErrorStatus(code)});
 };
 
 export async function GET(_request: Request, context: RouteContext) {
@@ -51,8 +52,8 @@ export async function POST(request: Request, context: RouteContext) {
     const body = postSchema.parse(await request.json());
     const service = await createService(projectId);
     if (body.action === 'compose') return NextResponse.json(await service.composeStoryboard(projectId));
-    if (body.action === 'regenerate_scene') return NextResponse.json(await service.regenerateScene(projectId, body.storyboardId, body.sceneId));
-    return NextResponse.json(await service.addScene(projectId, body.storyboardId, body.scene));
+    if (body.action === 'regenerate_scene') return NextResponse.json(await service.regenerateScene(projectId, body.storyboardId, body.sceneId, body.expectedRevision));
+    return NextResponse.json(await service.addScene(projectId, body.storyboardId, body.scene, body.expectedRevision));
   } catch (error) { return failure(error); }
 }
 
@@ -61,7 +62,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   try {
     const body = patchSchema.parse(await request.json());
     const service = await createService(projectId);
-    if (body.action === 'edit_scene') return NextResponse.json(await service.editScene(projectId, body.storyboardId, body.sceneId, body.change));
-    return NextResponse.json(await service.reorderScenes(projectId, body.storyboardId, body.orderedSceneIds));
+    if (body.action === 'edit_scene') return NextResponse.json(await service.editScene(projectId, body.storyboardId, body.sceneId, body.change, body.expectedRevision));
+    return NextResponse.json(await service.reorderScenes(projectId, body.storyboardId, body.orderedSceneIds, body.expectedRevision));
   } catch (error) { return failure(error); }
 }

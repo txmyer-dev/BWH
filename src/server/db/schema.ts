@@ -167,6 +167,7 @@ export const storyboards = pgTable(
       {onDelete: 'set null'}
     ),
     targetDurationSeconds: integer('target_duration_seconds').default(180).notNull(),
+    revision: integer('revision').default(0).notNull(),
     renderManifest: jsonb('render_manifest'),
     ...timestamps
   },

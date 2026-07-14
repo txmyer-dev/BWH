@@ -191,6 +191,7 @@ h1 {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -202,6 +203,7 @@ button {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 3px solid var(--muted-gold);
   outline-offset: 2px;

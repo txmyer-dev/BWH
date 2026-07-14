@@ -55,6 +55,22 @@ describe('OpenAIStoryAgent', () => {
     expect(request.input[1].content).toContain('UNTRUSTED_EVIDENCE_JSON');
   });
 
+  it('serializes only the effective corrected fact for storyboard composition', async () => {
+    const evidenceId = crypto.randomUUID();
+    const parse = vi.fn().mockResolvedValue({output_parsed: {
+      title: 'Film', theme: 'Family', voiceProfile: {traits: [], coverage: 'restrained'},
+      scenes: [{sceneType: 'media', title: 'Scene', narrationSentences: [{text: 'The bakery opened in 1964.', evidenceItemIds: [evidenceId]}], captionText: '', durationSeconds: 120, assetIds: [assetId], motionPreset: 'hold', transitionPreset: 'crossfade'}]
+    }});
+    const agent = new OpenAIStoryAgent({responses: {parse}} as never);
+    await agent.composeStoryboard({projectId: crypto.randomUUID(), approvedEvidence: [{
+      id: evidenceId, projectId: crypto.randomUUID(), kind: 'creator_memory', claim: 'The bakery opened in 1964.',
+      sourceAssetIds: [assetId], sourceExcerpt: 'Corrected by creator'
+    }]});
+    const serialized = parse.mock.calls[0][0].input[1].content;
+    expect(serialized).toContain('The bakery opened in 1964.');
+    expect(serialized).not.toContain('The bakery opened in 1962.');
+  });
+
   it('uses GPT-5.6 strict structured output and places developer safeguards before delimited evidence', async () => {
     const parse = vi.fn().mockResolvedValue({output_parsed: analysis});
     const agent = new OpenAIStoryAgent({responses: {parse}} as never);

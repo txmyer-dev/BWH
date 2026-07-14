@@ -6,6 +6,7 @@ import {PostgresEvidenceRepository} from '@/features/evidence/evidence-repositor
 import {PostgresProjectRepository} from '@/features/projects/project-repository';
 import {ProjectService} from '@/features/projects/project-service';
 import {getDatabase} from '@/server/db/client';
+import {authorizeEvidenceAccess} from './authorization';
 
 type RouteContext = {params: Promise<{projectId: string}>};
 const reviewSchema = z.discriminatedUnion('action', [
@@ -40,9 +41,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   try {
     const {repository, authorize} = await dependencies(projectId);
     const body = reviewSchema.parse(await request.json());
-    const item = await repository.findById(body.evidenceId);
-    if (!item || item.projectId !== projectId) throw new Error('EVIDENCE_NOT_FOUND');
-    await authorize(projectId);
+    await authorizeEvidenceAccess(projectId, body.evidenceId, authorize, repository);
     if (body.action === 'reject') return NextResponse.json(await repository.review(body.evidenceId, 'rejected'));
     return NextResponse.json(await repository.review(body.evidenceId, body.action === 'correct' ? 'corrected' : 'confirmed', body.action === 'correct' ? body.correction : undefined));
   } catch (error) {
