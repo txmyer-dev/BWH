@@ -1,5 +1,5 @@
 {
-  "id": "2980bfb3-9634-44ef-8dd3-8f1bc02bd696",
+  "id": "f541e3e6-895d-480e-8681-4a3174ea8d04",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -23,6 +23,12 @@
         "type": {
           "name": "type",
           "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "asset_kind": {
+          "name": "asset_kind",
+          "type": "varchar(30)",
           "primaryKey": false,
           "notNull": true
         },
@@ -75,6 +81,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "reservation_expires_at": {
+          "name": "reservation_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -97,7 +109,51 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "assets_project_kind_sequence_unique": {
+          "name": "assets_project_kind_sequence_unique",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "asset_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sequence_order",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"assets\".\"processing_status\" <> 'cleanup_pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "assets_original_object_key_unique": {
+          "name": "assets_original_object_key_unique",
+          "columns": [
+            {
+              "expression": "original_object_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "assets_project_id_projects_id_fk": {
           "name": "assets_project_id_projects_id_fk",
@@ -116,7 +172,16 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "assets_kind_sequence_check": {
+          "name": "assets_kind_sequence_check",
+          "value": "(\"assets\".\"asset_kind\" = 'image' AND \"assets\".\"sequence_order\" BETWEEN 0 AND 6) OR (\"assets\".\"asset_kind\" IN ('text', 'source_audio', 'creator_narration') AND \"assets\".\"sequence_order\" = 0)"
+        },
+        "assets_pending_expiry_check": {
+          "name": "assets_pending_expiry_check",
+          "value": "\"assets\".\"processing_status\" <> 'pending' OR \"assets\".\"reservation_expires_at\" IS NOT NULL"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.evidence_items": {

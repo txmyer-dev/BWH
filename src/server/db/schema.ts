@@ -77,11 +77,13 @@ export const assets = pgTable(
       'assets_kind_sequence_check',
       sql`(${table.assetKind} = 'image' AND ${table.sequenceOrder} BETWEEN 0 AND 6) OR (${table.assetKind} IN ('text', 'source_audio', 'creator_narration') AND ${table.sequenceOrder} = 0)`
     ),
-    uniqueIndex('assets_project_kind_sequence_unique').on(
-      table.projectId,
-      table.assetKind,
-      table.sequenceOrder
+    check(
+      'assets_pending_expiry_check',
+      sql`${table.processingStatus} <> 'pending' OR ${table.reservationExpiresAt} IS NOT NULL`
     ),
+    uniqueIndex('assets_project_kind_sequence_unique')
+      .on(table.projectId, table.assetKind, table.sequenceOrder)
+      .where(sql`${table.processingStatus} <> 'cleanup_pending'`),
     uniqueIndex('assets_original_object_key_unique').on(table.originalObjectKey)
   ]
 );

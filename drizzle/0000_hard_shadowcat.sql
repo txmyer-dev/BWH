@@ -2,6 +2,7 @@ CREATE TABLE "assets" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"project_id" uuid NOT NULL,
 	"type" varchar(20) NOT NULL,
+	"asset_kind" varchar(30) NOT NULL,
 	"mime_type" varchar(120) NOT NULL,
 	"original_object_key" text NOT NULL,
 	"derivative_object_key" text,
@@ -10,9 +11,12 @@ CREATE TABLE "assets" (
 	"caption" text,
 	"captured_at_text" text,
 	"sequence_order" integer NOT NULL,
+	"reservation_expires_at" timestamp with time zone,
 	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "assets_kind_sequence_check" CHECK (("assets"."asset_kind" = 'image' AND "assets"."sequence_order" BETWEEN 0 AND 6) OR ("assets"."asset_kind" IN ('text', 'source_audio', 'creator_narration') AND "assets"."sequence_order" = 0)),
+	CONSTRAINT "assets_pending_expiry_check" CHECK ("assets"."processing_status" <> 'pending' OR "assets"."reservation_expires_at" IS NOT NULL)
 );
 --> statement-breakpoint
 CREATE TABLE "evidence_items" (
@@ -141,6 +145,8 @@ ALTER TABLE "storyboards" ADD CONSTRAINT "storyboards_project_id_projects_id_fk"
 ALTER TABLE "storyboards" ADD CONSTRAINT "storyboards_creator_narration_asset_id_assets_id_fk" FOREIGN KEY ("creator_narration_asset_id") REFERENCES "public"."assets"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "subjects" ADD CONSTRAINT "subjects_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "voice_profiles" ADD CONSTRAINT "voice_profiles_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "assets_project_kind_sequence_unique" ON "assets" USING btree ("project_id","asset_kind","sequence_order") WHERE "assets"."processing_status" <> 'cleanup_pending';--> statement-breakpoint
+CREATE UNIQUE INDEX "assets_original_object_key_unique" ON "assets" USING btree ("original_object_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "storyboards_project_id_unique" ON "storyboards" USING btree ("project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "subjects_project_id_unique" ON "subjects" USING btree ("project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "voice_profiles_project_id_unique" ON "voice_profiles" USING btree ("project_id");

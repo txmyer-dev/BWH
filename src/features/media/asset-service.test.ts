@@ -21,7 +21,8 @@ const image = (overrides: Partial<UploadFile> = {}): UploadFile => ({
 });
 
 const setup = async (
-  now: () => Date = () => new Date('2026-07-14T12:00:00Z')
+  now: () => Date = () => new Date('2026-07-14T12:00:00Z'),
+  storage = new MemoryStorage()
 ) => {
   const projectService = new ProjectService(new InMemoryProjectRepository());
   const project = await projectService.createProject({
@@ -31,7 +32,6 @@ const setup = async (
     creatorRelationship: 'son'
   });
   const repository = new InMemoryAssetRepository();
-  const storage = new MemoryStorage();
   const service = new AssetService(repository, storage, projectService, now);
   return {project, repository, service, storage};
 };
@@ -274,6 +274,80 @@ describe('AssetService upload policy', () => {
         image({name: 'replacement.jpg'})
       )
     ).resolves.toEqual(expect.objectContaining({assetId: expect.any(String)}));
+  });
+
+  it('extends a compatible retry beyond every newly issued upload URL', async () => {
+    let now = new Date('2026-07-14T12:00:00Z');
+    const context = await setup(() => now);
+    const file = {kind: 'text' as const, name: 'notes.txt', contentType: 'text/plain', size: 100};
+    const first = await context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      file
+    );
+
+    now = new Date('2026-07-14T12:09:30Z');
+    await context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      {...file, reservationId: first.assetId}
+    );
+    const extended = await context.repository.findById(first.assetId);
+    expect(extended?.reservationExpiresAt?.toISOString()).toBe(
+      '2026-07-14T12:19:30.000Z'
+    );
+    expect(extended!.reservationExpiresAt!.getTime() - now.getTime()).toBeGreaterThan(
+      5 * 60 * 1_000
+    );
+
+    now = new Date('2026-07-14T12:11:00Z');
+    await expect(
+      context.service.requestUpload(
+        context.project.projectId,
+        context.project.ownerToken,
+        file
+      )
+    ).rejects.toThrow('ASSET_KIND_LIMIT_REACHED');
+  });
+
+  it('retains cleanup tombstones until durable object deletion succeeds', async () => {
+    class RetryableCleanupStorage extends MemoryStorage {
+      failCleanup = true;
+
+      override async deleteMany(objectKeys: string[]) {
+        if (this.failCleanup) throw new Error('STORAGE_UNAVAILABLE');
+        return super.deleteMany(objectKeys);
+      }
+    }
+
+    let now = new Date('2026-07-14T12:00:00Z');
+    const storage = new RetryableCleanupStorage();
+    const context = await setup(() => now, storage);
+    const file = {kind: 'text' as const, name: 'notes.txt', contentType: 'text/plain', size: 100};
+    const expired = await context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      file
+    );
+
+    now = new Date('2026-07-14T12:11:00Z');
+    const replacement = await context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      file
+    );
+    expect(replacement.assetId).not.toBe(expired.assetId);
+    expect((await context.repository.findById(expired.assetId))?.processingStatus).toBe(
+      'cleanup_pending'
+    );
+
+    storage.failCleanup = false;
+    await context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      {...file, reservationId: replacement.assetId}
+    );
+    await expect(context.repository.findById(expired.assetId)).resolves.toBeUndefined();
   });
 
   it('uses project-prefixed immutable original object keys', async () => {

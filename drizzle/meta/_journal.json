@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1784041199788,
-      "tag": "0000_initial",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1784042786658,
-      "tag": "0001_brief_nico_minoru",
+      "when": 1784043510976,
+      "tag": "0000_hard_shadowcat",
       "breakpoints": true
     }
   ]

@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 
-import {and, eq, lt, sql} from 'drizzle-orm';
+import {and, eq, inArray, lte, sql} from 'drizzle-orm';
 
 import type {ProjectService} from '../projects/project-service';
 import type {Database} from '../../server/db/client';
@@ -28,7 +28,7 @@ export interface Asset {
   originalName: string;
   mimeType: string;
   originalObjectKey: string;
-  processingStatus: 'pending' | 'ready';
+  processingStatus: 'pending' | 'ready' | 'cleanup_pending';
   reservationExpiresAt: Date | null;
   size: number;
   caption: string | null;
@@ -52,6 +52,7 @@ export interface AssetRepository {
     retryAssetId: string | undefined,
     now: Date
   ): Promise<ReservationResult>;
+  finishCleanup(objectKeys: string[]): Promise<void>;
   complete(
     assetId: string,
     expectedOriginalObjectKey: string,
@@ -72,7 +73,12 @@ const mapRow = (row: typeof assets.$inferSelect): Asset => {
     originalName: metadata.originalName ?? '',
     mimeType: row.mimeType,
     originalObjectKey: row.originalObjectKey,
-    processingStatus: row.processingStatus === 'ready' ? 'ready' : 'pending',
+    processingStatus:
+      row.processingStatus === 'ready'
+        ? 'ready'
+        : row.processingStatus === 'cleanup_pending'
+          ? 'cleanup_pending'
+          : 'pending',
     reservationExpiresAt: row.reservationExpiresAt,
     size: typeof metadata.size === 'number' ? metadata.size : 0,
     caption: row.caption,
@@ -136,16 +142,28 @@ export class PostgresAssetRepository implements AssetRepository {
         sql`select ${projects.id} from ${projects} where ${projects.id} = ${reservation.projectId} for update`
       );
 
-      const expired = await transaction
-        .delete(assets)
+      await transaction
+        .update(assets)
+        .set({
+          processingStatus: 'cleanup_pending',
+          reservationExpiresAt: null,
+          updatedAt: now
+        })
         .where(
           and(
             eq(assets.projectId, reservation.projectId),
             eq(assets.processingStatus, 'pending'),
-            lt(assets.reservationExpiresAt, now)
+            lte(assets.reservationExpiresAt, now)
           )
-        )
-        .returning({originalObjectKey: assets.originalObjectKey});
+        );
+
+      const cleanupRows = await transaction.query.assets.findMany({
+        where: (table, {and: all, eq: equals}) =>
+          all(
+            equals(table.projectId, reservation.projectId),
+            equals(table.processingStatus, 'cleanup_pending')
+          )
+      });
 
       if (retryAssetId) {
         const retryRow = await transaction.query.assets.findFirst({
@@ -155,7 +173,9 @@ export class PostgresAssetRepository implements AssetRepository {
               equals(table.projectId, reservation.projectId)
             )
         });
-        if (!retryRow) throw new Error('UPLOAD_RESERVATION_EXPIRED');
+        if (!retryRow || retryRow.processingStatus === 'cleanup_pending') {
+          throw new Error('UPLOAD_RESERVATION_EXPIRED');
+        }
         const retry = mapRow(retryRow);
         if (
           retry.processingStatus !== 'pending' ||
@@ -163,9 +183,23 @@ export class PostgresAssetRepository implements AssetRepository {
         ) {
           throw new Error('UPLOAD_RESERVATION_MISMATCH');
         }
+        const [extended] = await transaction
+          .update(assets)
+          .set({
+            reservationExpiresAt: reservation.reservationExpiresAt,
+            updatedAt: now
+          })
+          .where(
+            and(
+              eq(assets.id, retry.id),
+              eq(assets.processingStatus, 'pending')
+            )
+          )
+          .returning();
+        if (!extended) throw new Error('UPLOAD_RESERVATION_EXPIRED');
         return {
-          asset: retry,
-          releasedObjectKeys: expired.map((item) => item.originalObjectKey)
+          asset: mapRow(extended),
+          releasedObjectKeys: cleanupRows.map((item) => item.originalObjectKey)
         };
       }
 
@@ -173,7 +207,9 @@ export class PostgresAssetRepository implements AssetRepository {
         where: (table, {eq: equals}) =>
           equals(table.projectId, reservation.projectId)
       });
-      const current = currentRows.map(mapRow);
+      const current = currentRows
+        .map(mapRow)
+        .filter((asset) => asset.processingStatus !== 'cleanup_pending');
       const sequenceOrder = allocateSequence(reservation.kind, current);
       const [created] = await transaction
         .insert(assets)
@@ -202,9 +238,21 @@ export class PostgresAssetRepository implements AssetRepository {
         .returning();
       return {
         asset: mapRow(created),
-        releasedObjectKeys: expired.map((item) => item.originalObjectKey)
+        releasedObjectKeys: cleanupRows.map((item) => item.originalObjectKey)
       };
     });
+  }
+
+  async finishCleanup(objectKeys: string[]) {
+    if (objectKeys.length === 0) return;
+    await this.database
+      .delete(assets)
+      .where(
+        and(
+          eq(assets.processingStatus, 'cleanup_pending'),
+          inArray(assets.originalObjectKey, objectKeys)
+        )
+      );
   }
 
   async complete(
@@ -234,12 +282,16 @@ export class PostgresAssetRepository implements AssetRepository {
       .where(
         and(
           eq(assets.id, assetId),
-          eq(assets.originalObjectKey, expectedOriginalObjectKey)
+          eq(assets.originalObjectKey, expectedOriginalObjectKey),
+          eq(assets.processingStatus, 'pending')
         )
       )
       .returning();
     if (!updated) {
       const found = await this.findById(assetId);
+      if (found?.processingStatus === 'cleanup_pending') {
+        throw new Error('UPLOAD_RESERVATION_EXPIRED');
+      }
       throw new Error(found ? 'ORIGINAL_OBJECT_KEY_IMMUTABLE' : 'ASSET_NOT_FOUND');
     }
     return mapRow(updated);
@@ -273,28 +325,50 @@ export class InMemoryAssetRepository implements AssetRepository {
         asset.reservationExpiresAt &&
         asset.reservationExpiresAt < now
       ) {
-        this.assets.delete(id);
+        this.assets.set(id, {
+          ...asset,
+          processingStatus: 'cleanup_pending',
+          reservationExpiresAt: null
+        });
+        releasedObjectKeys.push(asset.originalObjectKey);
+      }
+    }
+    for (const asset of this.assets.values()) {
+      if (
+        asset.projectId === reservation.projectId &&
+        asset.processingStatus === 'cleanup_pending' &&
+        !releasedObjectKeys.includes(asset.originalObjectKey)
+      ) {
         releasedObjectKeys.push(asset.originalObjectKey);
       }
     }
 
     if (retryAssetId) {
       const retry = this.assets.get(retryAssetId);
-      if (!retry) throw new Error('UPLOAD_RESERVATION_EXPIRED');
+      if (!retry || retry.processingStatus === 'cleanup_pending') {
+        throw new Error('UPLOAD_RESERVATION_EXPIRED');
+      }
       if (
         retry.processingStatus !== 'pending' ||
         !reservationMatches(retry, reservation)
       ) {
         throw new Error('UPLOAD_RESERVATION_MISMATCH');
       }
+      const extended = {
+        ...retry,
+        reservationExpiresAt: reservation.reservationExpiresAt
+      };
+      this.assets.set(retry.id, extended);
       return {
-        asset: {...retry, knownPeople: [...retry.knownPeople]},
+        asset: {...extended, knownPeople: [...extended.knownPeople]},
         releasedObjectKeys
       };
     }
 
     const current = [...this.assets.values()].filter(
-      (asset) => asset.projectId === reservation.projectId
+      (asset) =>
+        asset.projectId === reservation.projectId &&
+        asset.processingStatus !== 'cleanup_pending'
     );
     const created: Asset = {
       ...reservation,
@@ -307,6 +381,18 @@ export class InMemoryAssetRepository implements AssetRepository {
       asset: {...created, knownPeople: [...created.knownPeople]},
       releasedObjectKeys
     };
+  }
+
+  async finishCleanup(objectKeys: string[]) {
+    const keys = new Set(objectKeys);
+    for (const [id, asset] of this.assets) {
+      if (
+        asset.processingStatus === 'cleanup_pending' &&
+        keys.has(asset.originalObjectKey)
+      ) {
+        this.assets.delete(id);
+      }
+    }
   }
 
   async complete(
@@ -387,7 +473,12 @@ export class AssetService {
       now
     );
     if (reservation.releasedObjectKeys.length > 0) {
-      await this.storage.deleteMany(reservation.releasedObjectKeys);
+      try {
+        await this.storage.deleteMany(reservation.releasedObjectKeys);
+        await this.repository.finishCleanup(reservation.releasedObjectKeys);
+      } catch {
+        // Cleanup tombstones remain durable and are retried on a later request.
+      }
     }
     const uploadUrl = await this.storage.createUploadUrl({
       objectKey: reservation.asset.originalObjectKey,
@@ -404,6 +495,10 @@ export class AssetService {
   async completeUpload(assetId: string) {
     const asset = await this.repository.findById(assetId);
     if (!asset) throw new Error('ASSET_NOT_FOUND');
+    if (asset.processingStatus === 'cleanup_pending') {
+      throw new Error('UPLOAD_RESERVATION_EXPIRED');
+    }
+    if (asset.processingStatus === 'ready') return asset;
     const metadata = await this.storage.stat(asset.originalObjectKey);
     validateFile({
       kind: asset.kind,
