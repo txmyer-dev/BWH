@@ -93,9 +93,11 @@ export class PostgresConsentRepository implements ConsentRepository {
   }
 
   async invalidate(id: string, at: Date) {
-    await this.database
-      .update(projectConsents)
-      .set({invalidatedAt: at})
-      .where(and(eq(projectConsents.id, id), isNull(projectConsents.invalidatedAt)));
+    await this.database.transaction(async (transaction) => {
+      const [snapshot] = await transaction.select({projectId: projectConsents.projectId, purpose: projectConsents.purpose}).from(projectConsents).where(eq(projectConsents.id, id)).limit(1);
+      if (!snapshot) return;
+      await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${snapshot.projectId}), hashtext(${snapshot.purpose}))`);
+      await transaction.update(projectConsents).set({invalidatedAt: at}).where(and(eq(projectConsents.id, id), isNull(projectConsents.invalidatedAt)));
+    });
   }
 }

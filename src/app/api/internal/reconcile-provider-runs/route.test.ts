@@ -14,4 +14,10 @@ describe('provider reconciliation route', () => {
     const response = await reconcileProviderRuns(new Request('https://service.example/internal', {method: 'POST', headers: {authorization: 'Bearer token'}}), {verifier, auth: {audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'}, reconcileExpired: vi.fn().mockResolvedValue(2), reconcileArtifacts: vi.fn().mockResolvedValue(3)});
     expect(response.status).toBe(200); await expect(response.json()).resolves.toEqual({runs: 2, artifacts: 3});
   });
+
+  it('does not expose internal reconciliation errors', async () => {
+    const verifier = {verifyIdToken: vi.fn().mockResolvedValue({getPayload: () => ({iss: 'https://accounts.google.com', aud: 'https://service.example', email: 'tasks@example.com', email_verified: true})})};
+    const response = await reconcileProviderRuns(new Request('https://service.example/internal', {method: 'POST', headers: {authorization: 'Bearer token'}}), {verifier, auth: {audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'}, reconcileExpired: vi.fn().mockRejectedValue(new Error('signed-url-secret')), reconcileArtifacts: vi.fn()});
+    expect(response.status).toBe(500); await expect(response.json()).resolves.toEqual({error: 'PROVIDER_RECONCILIATION_FAILED'});
+  });
 });

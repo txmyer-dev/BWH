@@ -1,8 +1,9 @@
 import {describe, expect, it} from 'vitest';
 
+import type {Database} from '../../server/db/client';
 import {fingerprintInput} from './input-fingerprint';
-import {InMemoryProviderRunRepository} from './provider-run-repository';
-import {ProviderRunService} from './provider-run-service';
+import {InMemoryProviderRunRepository, PostgresProviderRunRepository} from './provider-run-repository';
+import {providerRunSummary, ProviderRunService} from './provider-run-service';
 
 const projectId = crypto.randomUUID();
 const consentId = crypto.randomUUID();
@@ -40,6 +41,27 @@ describe('provider run state and budget control', () => {
     await expect(runs.reserve({...input, canonicalInput: {different: true}})).rejects.toThrow('PROJECT_PROVIDER_REQUEST_BUDGET_EXCEEDED');
   });
 
+  it('retires an obsolete-consent reservation so replacement consent can reserve the same input', async () => {
+    const repository = new InMemoryProviderRunRepository(); const runs = new ProviderRunService(repository, {fingerprintSecret: 'secret', defaultBudgetMicros: 9_000});
+    const old = await runs.reserve(input);
+    const replacement = await runs.reserve({...input, consentId: crypto.randomUUID()});
+    expect(replacement.runId).not.toBe(old.runId);
+    expect((await runs.get(old.runId))?.activeResult).toBe(false);
+  });
+
+  it('projects only compact owner-safe run fields', async () => {
+    const runs = new ProviderRunService(new InMemoryProviderRunRepository(), {fingerprintSecret: 'secret', defaultBudgetMicros: 9_000}); const reserved = await runs.reserve(input); const run = (await runs.get(reserved.runId))!;
+    expect(providerRunSummary(run)).not.toHaveProperty('leaseToken'); expect(providerRunSummary(run)).not.toHaveProperty('inputFingerprint'); expect(providerRunSummary(run)).not.toHaveProperty('consentId'); expect(providerRunSummary(run)).not.toHaveProperty('lastError');
+  });
+
+  it('acquires the consent advisory lock before locking an ambiguous retry row', async () => {
+    const events: string[] = [];
+    const transaction = {select: () => ({from: () => ({where: () => ({limit: async () => { events.push('candidate'); return [{projectId}]; }, for: async () => { events.push('row_lock'); return []; }})})}), execute: async () => { events.push('advisory'); }};
+    const database = {transaction: async <T>(operation: (tx: typeof transaction) => Promise<T>) => operation(transaction)} as unknown as Database;
+    await expect(new PostgresProviderRunRepository(database).acknowledgeAndRetry(crypto.randomUUID(), 1_000, 10)).rejects.toThrow('PROVIDER_RUN_NOT_AMBIGUOUS');
+    expect(events).toEqual(['candidate', 'advisory', 'row_lock']);
+  });
+
   it('expires pre-dispatch leases but makes expired dispatches ambiguous without reclaiming them', async () => {
     let now = new Date('2026-07-14T12:00:00Z');
     const repository = new InMemoryProviderRunRepository(() => now);
@@ -68,7 +90,7 @@ describe('provider run state and budget control', () => {
     const retry = await runs.acknowledgeAndRetry(reserved.runId);
     expect(retry.retryOfRunId).toBe(reserved.runId);
     expect((await runs.get(reserved.runId))?.settledCostMicros).toBe(input.estimatedCostMicros);
-    await expect(runs.complete(claim, input.estimatedCostMicros)).rejects.toThrow('PROVIDER_RUN_FENCED');
+    await expect(runs.complete(claim, {actualCostMicros: input.estimatedCostMicros, requestCount: 1})).rejects.toThrow('PROVIDER_RUN_FENCED');
     expect((await runs.get(reserved.runId))?.status).toBe('superseded_ambiguous');
   });
 
@@ -89,6 +111,6 @@ describe('provider run state and budget control', () => {
     const reserved = await runs.reserve(input); const claim = await runs.claim(reserved.runId); await runs.beginDispatch(claim);
     now = new Date(now.getTime() + 11);
     await expect(runs.heartbeat(claim)).rejects.toThrow('PROVIDER_RUN_FENCED');
-    await expect(runs.complete(claim, 100)).rejects.toThrow('PROVIDER_RUN_FENCED');
+    await expect(runs.complete(claim, {actualCostMicros: 100, requestCount: 1})).rejects.toThrow('PROVIDER_RUN_FENCED');
   });
 });

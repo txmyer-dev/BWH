@@ -36,7 +36,7 @@ type ImageDraft = {
   reservationId?: string;
 };
 
-type ProviderRunSummary = {id: string; operation: string; provider: string; status: string; cacheHitCount: number; requestCount: number; estimatedCostMicros: number};
+type ProviderRunSummary = {id: string; operation: string; provider: string; status: string; cacheHitCount: number; requestCount: number; estimatedCostMicros: number; settledCostMicros: number | null};
 
 const putWithProgress = (
   url: string,
@@ -698,7 +698,7 @@ export default function ProjectPage({
         <p>Estimate, not final billing.</p>
         {providerRuns.length === 0 ? <p>No external processing has been requested.</p> : <ul>
           {providerRuns.map((run) => <li key={run.id}>
-            <strong>{run.operation.replaceAll('_', ' ')}</strong> · {run.provider} · {run.status} · cache reuse {run.cacheHitCount} · requests {run.requestCount} · estimated ${(run.estimatedCostMicros / 1_000_000).toFixed(4)}
+            <strong>{run.operation.replaceAll('_', ' ')}</strong> · {run.provider} · {run.status} · cache reuse {run.cacheHitCount} · requests {run.requestCount} · estimated ${(run.estimatedCostMicros / 1_000_000).toFixed(4)}{run.settledCostMicros !== null ? ` · observed $${(run.settledCostMicros / 1_000_000).toFixed(4)}${run.settledCostMicros > run.estimatedCostMicros ? ' (over estimate)' : ''}` : ''}
           </li>)}
         </ul>}
       </section>

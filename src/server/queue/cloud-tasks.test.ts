@@ -30,10 +30,11 @@ describe('CloudTasksQueue', () => {
     const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
     const providerRunId = crypto.randomUUID();
     await queue.enqueue({type: 'execute_provider_run', projectId: crypto.randomUUID(), providerRunId});
-    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId, providerArtifactId: 'artifact-one'});
-    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId, providerArtifactId: 'artifact-two'});
+    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId: null, providerArtifactId: 'files/artifact-one'});
+    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId: null, providerArtifactId: 'files/artifact-two'});
     expect(createTask.mock.calls[0][0].task.name).toContain(providerRunId);
-    expect(createTask.mock.calls[1][0].task.name).toContain(providerRunId);
+    expect(createTask.mock.calls[1][0].task.name).not.toContain('files/');
+    expect(createTask.mock.calls[1][0].task.name).not.toContain('artifact-one');
     expect(createTask.mock.calls[0][0].task.name).not.toBe(createTask.mock.calls[1][0].task.name);
     expect(createTask.mock.calls[1][0].task.name).not.toBe(createTask.mock.calls[2][0].task.name);
   });

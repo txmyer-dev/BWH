@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+
 import type {QueuedTask, TaskQueue} from './task-queue';
 
 export class InlineQueue implements TaskQueue {
@@ -6,7 +8,7 @@ export class InlineQueue implements TaskQueue {
   constructor(private readonly handler?: (task: QueuedTask) => Promise<void>) {}
 
   async enqueue(task: QueuedTask) {
-    const id = task.type === 'analyze_collection' ? task.jobId : `${task.type}:${task.providerRunId}${task.type === 'cleanup_provider_artifact' ? `:${task.providerArtifactId}` : ''}`;
+    const id = task.type === 'analyze_collection' ? task.jobId : task.type === 'execute_provider_run' ? `${task.type}:${task.providerRunId}` : `${task.type}:${createHash('sha256').update(task.providerArtifactId).digest('hex')}`;
     if (this.delivered.has(id)) return;
     if (this.handler) await this.handler(task);
     this.delivered.add(id);

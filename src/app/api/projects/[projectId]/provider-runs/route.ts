@@ -3,7 +3,8 @@ import {cookies} from 'next/headers';
 import {PostgresProjectRepository} from '@/features/projects/project-repository';
 import {ProjectService} from '@/features/projects/project-service';
 import {PostgresProviderRunRepository} from '@/features/providers/provider-run-repository';
-import {ProviderRunService} from '@/features/providers/provider-run-service';
+import {providerRunSummary, ProviderRunService} from '@/features/providers/provider-run-service';
+import {providerRunsLoadError} from '@/features/providers/provider-route-policy';
 import {getDatabase} from '@/server/db/client';
 import {parseEnv} from '@/server/env';
 
@@ -17,9 +18,9 @@ export async function GET(_request: Request, context: RouteContext) {
     await new ProjectService(new PostgresProjectRepository(database)).assertProjectOwner(projectId, token);
     const service = new ProviderRunService(new PostgresProviderRunRepository(database), {fingerprintSecret: env.PROVIDER_FINGERPRINT_SECRET ?? 'development-only-provider-fingerprint', defaultBudgetMicros: env.PROVIDER_DEFAULT_BUDGET_MICROS, defaultRequestBudget: env.PROVIDER_DEFAULT_REQUEST_BUDGET, leaseMs: env.PROVIDER_RUN_LEASE_MS});
     const runs = await service.list(projectId);
-    return Response.json(runs.map(({id, operation, provider, status, cacheHitCount, requestCount, estimatedCostMicros, createdAt}) => ({id, operation, provider, status, cacheHitCount, requestCount, estimatedCostMicros, createdAt})));
+    return Response.json(runs.map(providerRunSummary));
   } catch (error) {
-    const code = error instanceof Error ? error.message : 'PROVIDER_RUNS_LOAD_FAILED';
-    return Response.json({error: code}, {status: code === 'PROJECT_FORBIDDEN' ? 403 : 500});
+    const safe = providerRunsLoadError(error instanceof Error ? error.message : '');
+    return Response.json({error: safe.code}, {status: safe.status});
   }
 }

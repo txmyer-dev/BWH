@@ -2,6 +2,7 @@ import {OAuth2Client} from 'google-auth-library';
 
 import {PostgresProviderArtifactRepository, ProviderArtifactService} from '../../../../features/providers/provider-artifact-service';
 import {PostgresProviderRunRepository} from '../../../../features/providers/provider-run-repository';
+import {providerReconciliationError} from '../../../../features/providers/provider-route-policy';
 import {ProviderRunService} from '../../../../features/providers/provider-run-service';
 import {getDatabase} from '../../../../server/db/client';
 import {parseEnv} from '../../../../server/env';
@@ -20,8 +21,8 @@ export const reconcileProviderRuns = async (request: Request, dependencies: Depe
     const [runs, artifacts] = await Promise.all([dependencies.reconcileExpired(), dependencies.reconcileArtifacts()]);
     return Response.json({runs, artifacts});
   } catch (error) {
-    const code = error instanceof Error ? error.message : 'PROVIDER_RECONCILIATION_FAILED';
-    return Response.json({error: code}, {status: code === 'CLOUD_TASK_UNAUTHORIZED' ? 401 : 500});
+    const safe = providerReconciliationError(error instanceof Error ? error.message : '');
+    return Response.json({error: safe.code}, {status: safe.status});
   }
 };
 

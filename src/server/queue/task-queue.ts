@@ -13,7 +13,7 @@ export interface ExecuteProviderRunTask {
 export interface CleanupProviderArtifactTask {
   type: 'cleanup_provider_artifact';
   projectId: string;
-  providerRunId: string;
+  providerRunId?: string | null;
   providerArtifactId: string;
 }
 

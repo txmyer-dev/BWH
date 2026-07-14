@@ -7,7 +7,7 @@ export class DefaultProviderExecutor implements ProviderExecutor {
   constructor(private readonly consents: ConsentService, private readonly runs: ProviderRunService) {}
   async execute<T>(input: ProviderExecutionInput<T>): Promise<ProviderExecution<T>> {
     const consent = await this.consents.assertProcessingConsent(input.projectId, input.provider as ProcessingProvider, input.dataCategories);
-    const reservation = await this.runs.reserve({...input, consentId: consent.id});
+    const reservation = await this.runs.reserve({...input, consentId: consent.id, consentSnapshotHash: consent.snapshotHash, dataCategories: input.dataCategories});
     if (reservation.cacheHit) return {runId: reservation.runId, cacheHit: true, result: await input.loadResult(reservation.runId)};
     const existing = await this.runs.get(reservation.runId);
     if (existing?.status === 'completed') return {runId: reservation.runId, cacheHit: true, result: await input.loadResult(reservation.runId)};
@@ -21,9 +21,15 @@ export class DefaultProviderExecutor implements ProviderExecutor {
     const controller = new AbortController();
     const heartbeat = setInterval(() => { void this.runs.heartbeat(claim).catch(() => controller.abort()); }, Math.max(1_000, Math.floor((claim.dispatchDeadlineAt.getTime() - Date.now()) / 2)));
     try {
-      const result = await input.dispatch({runId: claim.runId, providerIdempotencyKey: `provider-run-${claim.runId}`, signal: controller.signal});
-      await this.runs.completeWithResult(claim, input.estimatedCostMicros, () => input.persistResult(claim, result));
-      return {runId: claim.runId, cacheHit: false, result};
+      const dispatched = await input.dispatch({runId: claim.runId, providerIdempotencyKey: `provider-run-${claim.runId}`, signal: controller.signal});
+      if (!Number.isSafeInteger(dispatched.usage.actualCostMicros) || dispatched.usage.actualCostMicros < 0 || !Number.isSafeInteger(dispatched.usage.requestCount) || dispatched.usage.requestCount < 1) throw new Error('PROVIDER_USAGE_INVALID');
+      try {
+        await this.runs.completeWithResult(claim, dispatched.usage, (writer) => input.persistResult(writer, claim, dispatched.result));
+      } catch (error) {
+        await input.cleanupOrphanedResult?.(dispatched.result).catch(() => undefined);
+        throw error;
+      }
+      return {runId: claim.runId, cacheHit: false, result: dispatched.result};
     } catch (error) {
       await this.runs.fail(claim, 'PROVIDER_DISPATCH_FAILED').catch(() => undefined);
       throw error;

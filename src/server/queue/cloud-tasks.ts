@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+
 import type {QueuedTask, TaskQueue} from './task-queue';
 
 interface CloudTasksClientLike {
@@ -17,7 +19,9 @@ export class CloudTasksQueue implements TaskQueue {
   async enqueue(task: QueuedTask) {
     const taskName = task.type === 'analyze_collection'
       ? `analysis-${task.jobId}`
-      : `provider-${task.type}-${task.providerRunId}${task.type === 'cleanup_provider_artifact' ? `-${task.providerArtifactId}` : ''}`;
+      : task.type === 'execute_provider_run'
+        ? `provider-${task.type}-${task.providerRunId}`
+        : `provider-${task.type}-${createHash('sha256').update(task.providerArtifactId).digest('hex').slice(0, 32)}`;
     try {
       await this.client.createTask({
         parent: this.config.queuePath,

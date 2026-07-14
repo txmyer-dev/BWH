@@ -41,4 +41,12 @@ describe('PostgresConsentRepository consent replacement', () => {
     await expect(repository.accept(row)).resolves.toMatchObject({id: row.id});
     expect(events).toEqual(['lock', 'invalidate', 'insert']);
   });
+
+  it('takes the same project-purpose lock before explicit invalidation', async () => {
+    const events: string[] = []; const id = crypto.randomUUID();
+    const transaction = {select: () => ({from: () => ({where: () => ({limit: async () => [{projectId: crypto.randomUUID(), purpose: 'processing'}]})})}), execute: async () => { events.push('lock'); }, update: () => ({set: () => ({where: async () => { events.push('invalidate'); }})})};
+    const database = {transaction: async <T>(operation: (tx: typeof transaction) => Promise<T>) => operation(transaction)} as unknown as Database;
+    await new PostgresConsentRepository(database).invalidate(id, new Date());
+    expect(events).toEqual(['lock', 'invalidate']);
+  });
 });

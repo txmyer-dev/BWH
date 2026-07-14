@@ -5,6 +5,7 @@ import {
   jsonb,
   bigint,
   index,
+  foreignKey,
   pgTable,
   real,
   text,
@@ -261,15 +262,15 @@ export const projectProviderBudgets = pgTable('project_provider_budgets', {
   ...timestamps
 }, (table) => [
   check('project_provider_budgets_nonnegative_check', sql`${table.limitMicros} >= 0 AND ${table.reservedMicros} >= 0 AND ${table.settledMicros} >= 0`),
-  check('project_provider_request_budgets_nonnegative_check', sql`${table.requestLimit} >= 0 AND ${table.reservedRequests} >= 0 AND ${table.settledRequests} >= 0`),
-  check('project_provider_request_budgets_limit_check', sql`${table.reservedRequests} + ${table.settledRequests} <= ${table.requestLimit}`),
-  check('project_provider_budgets_limit_check', sql`${table.reservedMicros} + ${table.settledMicros} <= ${table.limitMicros}`)
+  check('project_provider_request_budgets_nonnegative_check', sql`${table.requestLimit} >= 0 AND ${table.reservedRequests} >= 0 AND ${table.settledRequests} >= 0`)
 ]);
 
 export const providerRuns = pgTable('provider_runs', {
   id: uuid('id').primaryKey(),
   projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
   consentId: uuid('consent_id').notNull().references(() => projectConsents.id, {onDelete: 'restrict'}),
+  consentSnapshotHash: varchar('consent_snapshot_hash', {length: 64}).notNull(),
+  dataCategories: jsonb('data_categories').notNull(),
   provider: varchar('provider', {length: 80}).notNull(),
   model: varchar('model', {length: 120}).notNull(),
   operation: varchar('operation', {length: 40}).notNull(),
@@ -288,13 +289,16 @@ export const providerRuns = pgTable('provider_runs', {
   retryOfRunId: uuid('retry_of_run_id'),
   activeResult: boolean('active_result').default(true).notNull(),
   lastError: text('last_error'),
+  usageMetadata: jsonb('usage_metadata'),
   ...timestamps
 }, (table) => [
   check('provider_runs_status_check', sql`${table.status} IN ('reserved','processing','dispatching','completed','failed','ambiguous','superseded_ambiguous','late_completed')`),
   check('provider_runs_cost_nonnegative_check', sql`${table.estimatedCostMicros} >= 0 AND ${table.reservedCostMicros} >= 0 AND (${table.settledCostMicros} IS NULL OR ${table.settledCostMicros} >= 0)`),
   uniqueIndex('provider_runs_active_success_fingerprint_unique').on(table.projectId, table.provider, table.model, table.operation, table.inputFingerprint).where(sql`${table.status} IN ('reserved','processing','dispatching','completed','ambiguous') AND ${table.activeResult} = true`),
   index('provider_runs_project_created_idx').on(table.projectId, table.createdAt),
-  index('provider_runs_dispatch_deadline_idx').on(table.dispatchDeadlineAt).where(sql`${table.status} = 'dispatching'`)
+  index('provider_runs_dispatch_deadline_idx').on(table.dispatchDeadlineAt).where(sql`${table.status} = 'dispatching'`),
+  foreignKey({name: 'provider_runs_retry_of_run_id_provider_runs_id_fk', columns: [table.retryOfRunId], foreignColumns: [table.id]}).onDelete('set null'),
+  index('provider_runs_retry_of_run_idx').on(table.retryOfRunId)
 ]);
 
 export const providerArtifacts = pgTable('provider_artifacts', {
@@ -306,6 +310,8 @@ export const providerArtifacts = pgTable('provider_artifacts', {
   status: varchar('status', {length: 30}).default('active').notNull(),
   expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
   cleanupAttempts: integer('cleanup_attempts').default(0).notNull(),
+  cleanupClaimToken: uuid('cleanup_claim_token'),
+  cleanupLeaseExpiresAt: timestamp('cleanup_lease_expires_at', {withTimezone: true}),
   lastCleanupError: text('last_cleanup_error'),
   ...timestamps
 }, (table) => [
