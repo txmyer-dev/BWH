@@ -9,7 +9,7 @@ import type {EvidenceItem, VerificationStatus} from './schemas';
 export interface AnalysisJob {
   id: string;
   projectId: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'retired_provider_pivot';
   attemptCount: number;
   processingStartedAt: Date | null;
   leaseExpiresAt: Date | null;
@@ -28,7 +28,7 @@ export const claimDisposition = (
   now: Date
 ): 'claimable' | 'busy' | 'completed' | 'terminal' => {
   if (job.status === 'completed') return 'completed';
-  if (job.status === 'failed') return 'terminal';
+  if (job.status === 'failed' || job.status === 'retired_provider_pivot') return 'terminal';
   if (job.status === 'pending') return 'claimable';
   return job.leaseExpiresAt !== null && job.leaseExpiresAt <= now ? 'claimable' : 'busy';
 };

@@ -301,6 +301,13 @@ export const providerRuns = pgTable('provider_runs', {
   index('provider_runs_retry_of_run_idx').on(table.retryOfRunId)
 ]);
 
+export const providerRunResults = pgTable('provider_run_results', {
+  providerRunId: uuid('provider_run_id').primaryKey().references(() => providerRuns.id, {onDelete: 'cascade'}),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  structuredResult: jsonb('structured_result').notNull(),
+  createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
+}, (table) => [index('provider_run_results_project_idx').on(table.projectId)]);
+
 export const providerArtifacts = pgTable('provider_artifacts', {
   id: uuid('id').primaryKey(),
   projectId: uuid('project_id').notNull(),

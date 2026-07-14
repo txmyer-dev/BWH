@@ -6,6 +6,10 @@ const schema = z.object({
   GCS_BUCKET: z.string().min(1),
   OPENAI_API_KEY: z.string().min(1),
   GEMINI_API_KEY: z.string().min(1).optional(),
+  GEMINI_STORY_MODEL: z.string().min(1).default('gemini-3.1-flash-lite'),
+  GEMINI_REQUIRE_PAID_PROJECT: z.stringbool().default(false),
+  GEMINI_PAID_PROJECT_VERIFIED: z.stringbool().default(false),
+  GEMINI_PAID_PROJECT_ID: z.string().min(1).optional(),
   AZURE_SPEECH_KEY: z.string().min(1).optional(),
   AZURE_SPEECH_REGION: z.string().min(1).optional(),
   GCP_PROJECT_ID: z.string().min(1),
@@ -26,3 +30,4 @@ const schema = z.object({
 });
 
 export const parseEnv = (input: NodeJS.ProcessEnv) => schema.parse(input);
+export type ServerEnv = z.infer<typeof schema>;

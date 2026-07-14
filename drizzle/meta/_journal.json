@@ -36,6 +36,20 @@
       "when": 1784065872776,
       "tag": "0004_provider_control_plane_review_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784067306210,
+      "tag": "0005_retire_legacy_analysis_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784067656386,
+      "tag": "0006_provider_run_results",
+      "breakpoints": true
     }
   ]
 }
