@@ -173,34 +173,38 @@ export class PostgresAssetRepository implements AssetRepository {
               equals(table.projectId, reservation.projectId)
             )
         });
-        if (!retryRow || retryRow.processingStatus === 'cleanup_pending') {
+        if (!retryRow) {
           throw new Error('UPLOAD_RESERVATION_EXPIRED');
         }
         const retry = mapRow(retryRow);
-        if (
-          retry.processingStatus !== 'pending' ||
-          !reservationMatches(retry, reservation)
-        ) {
+        if (!reservationMatches(retry, reservation)) {
           throw new Error('UPLOAD_RESERVATION_MISMATCH');
         }
-        const [extended] = await transaction
-          .update(assets)
-          .set({
-            reservationExpiresAt: reservation.reservationExpiresAt,
-            updatedAt: now
-          })
-          .where(
-            and(
-              eq(assets.id, retry.id),
-              eq(assets.processingStatus, 'pending')
+        if (retry.processingStatus !== 'cleanup_pending') {
+          if (retry.processingStatus !== 'pending') {
+            throw new Error('UPLOAD_RESERVATION_MISMATCH');
+          }
+          const [extended] = await transaction
+            .update(assets)
+            .set({
+              reservationExpiresAt: reservation.reservationExpiresAt,
+              updatedAt: now
+            })
+            .where(
+              and(
+                eq(assets.id, retry.id),
+                eq(assets.processingStatus, 'pending')
+              )
             )
-          )
-          .returning();
-        if (!extended) throw new Error('UPLOAD_RESERVATION_EXPIRED');
-        return {
-          asset: mapRow(extended),
-          releasedObjectKeys: cleanupRows.map((item) => item.originalObjectKey)
-        };
+            .returning();
+          if (!extended) throw new Error('UPLOAD_RESERVATION_EXPIRED');
+          return {
+            asset: mapRow(extended),
+            releasedObjectKeys: cleanupRows.map(
+              (item) => item.originalObjectKey
+            )
+          };
+        }
       }
 
       const currentRows = await transaction.query.assets.findMany({
@@ -323,7 +327,7 @@ export class InMemoryAssetRepository implements AssetRepository {
         asset.projectId === reservation.projectId &&
         asset.processingStatus === 'pending' &&
         asset.reservationExpiresAt &&
-        asset.reservationExpiresAt < now
+        asset.reservationExpiresAt <= now
       ) {
         this.assets.set(id, {
           ...asset,
@@ -345,24 +349,26 @@ export class InMemoryAssetRepository implements AssetRepository {
 
     if (retryAssetId) {
       const retry = this.assets.get(retryAssetId);
-      if (!retry || retry.processingStatus === 'cleanup_pending') {
+      if (!retry) {
         throw new Error('UPLOAD_RESERVATION_EXPIRED');
       }
-      if (
-        retry.processingStatus !== 'pending' ||
-        !reservationMatches(retry, reservation)
-      ) {
+      if (!reservationMatches(retry, reservation)) {
         throw new Error('UPLOAD_RESERVATION_MISMATCH');
       }
-      const extended = {
-        ...retry,
-        reservationExpiresAt: reservation.reservationExpiresAt
-      };
-      this.assets.set(retry.id, extended);
-      return {
-        asset: {...extended, knownPeople: [...extended.knownPeople]},
-        releasedObjectKeys
-      };
+      if (retry.processingStatus !== 'cleanup_pending') {
+        if (retry.processingStatus !== 'pending') {
+          throw new Error('UPLOAD_RESERVATION_MISMATCH');
+        }
+        const extended = {
+          ...retry,
+          reservationExpiresAt: reservation.reservationExpiresAt
+        };
+        this.assets.set(retry.id, extended);
+        return {
+          asset: {...extended, knownPeople: [...extended.knownPeople]},
+          releasedObjectKeys
+        };
+      }
     }
 
     const current = [...this.assets.values()].filter(

@@ -9,18 +9,17 @@ import {
   type FormEvent
 } from 'react';
 
+import {
+  createWaitingUploadStatus,
+  type UploadStatus
+} from '@/features/media/upload-ui-state';
+
 type ImageDraft = {
   file: File;
   previewUrl: string;
   caption: string;
   capturedAtText: string;
   knownPeople: string;
-  progress: number;
-  status: 'waiting' | 'uploading' | 'ready' | 'failed';
-  reservationId?: string;
-};
-
-type ExtraStatus = {
   progress: number;
   status: 'waiting' | 'uploading' | 'ready' | 'failed';
   reservationId?: string;
@@ -59,14 +58,12 @@ export default function ProjectPage({
   const [images, setImages] = useState<ImageDraft[]>([]);
   const [supportingText, setSupportingText] = useState('');
   const [sourceAudio, setSourceAudio] = useState<File | null>(null);
-  const [textStatus, setTextStatus] = useState<ExtraStatus>({
-    progress: 0,
-    status: 'waiting'
-  });
-  const [audioStatus, setAudioStatus] = useState<ExtraStatus>({
-    progress: 0,
-    status: 'waiting'
-  });
+  const [textStatus, setTextStatus] = useState<UploadStatus>(
+    createWaitingUploadStatus
+  );
+  const [audioStatus, setAudioStatus] = useState<UploadStatus>(
+    createWaitingUploadStatus
+  );
   const [message, setMessage] = useState('Add at least three photographs.');
   const previewUrls = useRef<string[]>([]);
 
@@ -313,7 +310,10 @@ export default function ProjectPage({
             <textarea
               rows={8}
               value={supportingText}
-              onChange={(event) => setSupportingText(event.target.value)}
+              onChange={(event) => {
+                setSupportingText(event.target.value);
+                setTextStatus(createWaitingUploadStatus());
+              }}
             />
           </label>
           {supportingText && (
@@ -330,7 +330,10 @@ export default function ProjectPage({
             <input
               type="file"
               accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg"
-              onChange={(event) => setSourceAudio(event.target.files?.[0] ?? null)}
+              onChange={(event) => {
+                setSourceAudio(event.target.files?.[0] ?? null);
+                setAudioStatus(createWaitingUploadStatus());
+              }}
             />
             {sourceAudio && (
               <>

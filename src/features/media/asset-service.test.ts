@@ -334,7 +334,7 @@ describe('AssetService upload policy', () => {
     const replacement = await context.service.requestUpload(
       context.project.projectId,
       context.project.ownerToken,
-      file
+      {...file, reservationId: expired.assetId}
     );
     expect(replacement.assetId).not.toBe(expired.assetId);
     expect((await context.repository.findById(expired.assetId))?.processingStatus).toBe(
@@ -348,6 +348,75 @@ describe('AssetService upload policy', () => {
       {...file, reservationId: replacement.assetId}
     );
     await expect(context.repository.findById(expired.assetId)).resolves.toBeUndefined();
+  });
+
+  it('atomically replaces an expired retry reservation and returns its cleanup key', async () => {
+    const repository = new InMemoryAssetRepository();
+    const expiresAt = new Date('2026-07-14T12:10:00Z');
+    const original = {
+      id: crypto.randomUUID(),
+      projectId: crypto.randomUUID(),
+      kind: 'text' as const,
+      originalName: 'notes.txt',
+      mimeType: 'text/plain',
+      originalObjectKey: 'projects/project/originals/original.txt',
+      reservationExpiresAt: expiresAt,
+      size: 100,
+      caption: null,
+      capturedAtText: null,
+      knownPeople: []
+    };
+    await repository.reservePending(original, undefined, new Date('2026-07-14T12:00:00Z'));
+
+    const replacement = await repository.reservePending(
+      {
+        ...original,
+        id: crypto.randomUUID(),
+        originalObjectKey: 'projects/project/originals/replacement.txt',
+        reservationExpiresAt: new Date('2026-07-14T12:20:00Z')
+      },
+      original.id,
+      expiresAt
+    );
+
+    expect(replacement.asset.id).not.toBe(original.id);
+    expect(replacement.releasedObjectKeys).toContain(original.originalObjectKey);
+    expect((await repository.findById(original.id))?.processingStatus).toBe(
+      'cleanup_pending'
+    );
+  });
+
+  it('rejects an expired retry when the replacement is not compatible', async () => {
+    const repository = new InMemoryAssetRepository();
+    const expiresAt = new Date('2026-07-14T12:10:00Z');
+    const original = {
+      id: crypto.randomUUID(),
+      projectId: crypto.randomUUID(),
+      kind: 'text' as const,
+      originalName: 'notes.txt',
+      mimeType: 'text/plain',
+      originalObjectKey: 'projects/project/originals/original.txt',
+      reservationExpiresAt: expiresAt,
+      size: 100,
+      caption: null,
+      capturedAtText: null,
+      knownPeople: []
+    };
+    await repository.reservePending(original, undefined, new Date('2026-07-14T12:00:00Z'));
+
+    await expect(
+      repository.reservePending(
+        {
+          ...original,
+          id: crypto.randomUUID(),
+          originalName: 'different.txt',
+          originalObjectKey: 'projects/project/originals/replacement.txt',
+          reservationExpiresAt: new Date('2026-07-14T12:20:00Z')
+        },
+        original.id,
+        expiresAt
+      )
+    ).rejects.toThrow('UPLOAD_RESERVATION_MISMATCH');
   });
 
   it('uses project-prefixed immutable original object keys', async () => {
