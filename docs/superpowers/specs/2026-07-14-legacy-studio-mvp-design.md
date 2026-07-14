@@ -93,6 +93,7 @@ Chat-like interaction may support the workflow, but the final experience is a fi
 - Compose a draft film storyboard with source provenance.
 - Edit the title, dedication, scenes, narration text, captions, and image order.
 - Generate narration with a standard OpenAI voice by default.
+- Offer Azure Speech as a secondary generated-narration provider when OpenAI narration is unavailable or unsuitable.
 - Allow the creator to replace generated narration with an uploaded narration recording.
 - Place authentic uploaded audio clips into selected scenes.
 - Preview the approved storyboard and audio plan.
@@ -183,9 +184,11 @@ The creator can edit every field, reorder scenes, adjust scene duration, and reg
 
 The default path uses a standard built-in OpenAI narration voice reading the approved subject-informed script. The narrator is not presented as the subject. The creator selects from a small curated voice set and hears a short sample before rendering.
 
-The fallback path allows the creator to upload a complete narration recording. The recording follows the approved script, and the creator can adjust scene durations to match it. Authentic clips supplied with the source collection may replace or interrupt narration in selected scenes.
+Azure Speech is the secondary generated-narration provider. A provider failure never silently changes the approved voice: the Studio explains that the preferred narrator is unavailable, offers an Azure voice sample, and requires creator approval before switching providers.
 
-The film includes a restrained end-credit disclosure when generated narration is used: “Narration created with an AI-generated OpenAI voice.” The MVP never clones the subject's voice.
+The creator-recorded path allows the creator to upload a complete narration recording instead. The recording follows the approved script, and the creator can adjust scene durations to match it. Authentic clips supplied with the source collection may replace or interrupt narration in selected scenes.
+
+The film includes a restrained end-credit disclosure when generated narration is used: “Narration created with an AI-generated voice from OpenAI” or “Narration created with an AI-generated voice from Microsoft Azure,” according to the selected provider. The MVP never clones the subject's voice.
 
 ### Step 7: Prepare the gift
 
@@ -223,6 +226,7 @@ The system prompt must instruct models that uploaded content is data, not author
 - **AI narrative and vision:** OpenAI Responses API with `gpt-5.6`
 - **Transcription:** OpenAI audio transcription with `gpt-4o-transcribe`
 - **Narration:** OpenAI Speech API with a standard built-in voice and a configurable supported speech model
+- **Backup narration:** Microsoft Azure Speech with a standard neural voice
 - **Film composition:** Remotion scene components rendered with an FFmpeg-capable container
 - **Film rendering:** an on-demand Google Cloud Run Job
 - **Restoration:** optional third-party restoration adapter behind a provider-neutral interface
@@ -255,7 +259,7 @@ Builds the grounded voice profile, composes scene drafts from approved evidence,
 
 #### Narration service
 
-Generates audio with a standard OpenAI voice, stores creator narration, places authentic clips, records the required generated-voice disclosure, and calculates audio durations for the storyboard.
+Implements a provider-neutral narration interface with OpenAI as the default and Azure Speech as the explicit secondary provider. It stores creator narration, places authentic clips, records the required provider-specific generated-voice disclosure, and calculates audio durations for the storyboard.
 
 #### Render service
 
@@ -354,7 +358,7 @@ Creates immutable render manifests, launches an on-demand Cloud Run Job, renders
 - `time_range_text`
 - `status`
 - `dedication`
-- `narration_source` (`openai`, `creator`)
+- `narration_source` (`openai`, `azure`, `creator`)
 - `narrator_voice` (nullable)
 - `creator_narration_asset_id` (nullable)
 - `target_duration_seconds`
@@ -424,9 +428,9 @@ The composer must fail closed: if a factual sentence lacks evidence, it is omitt
 
 ### Narration generation
 
-Input: the creator-approved narration text for each scene, selected standard OpenAI voice, and restrained direction for pacing and tone.
+Input: the creator-approved narration text for each scene, selected provider and standard voice, and restrained direction for pacing and tone.
 
-Output: generated narration audio per scene, duration metadata, and a disclosure flag that must be represented in the film credits.
+Output: generated narration audio per scene, provider and voice metadata, duration metadata, and a provider-specific disclosure that must be represented in the film credits.
 
 ## 10. Processing and data flow
 
@@ -441,8 +445,8 @@ Output: generated narration audio per scene, duration metadata, and a disclosure
 9. The creator approves the framing and answers targeted questions.
 10. The system updates verification states and builds the voice profile.
 11. The storyboard composer produces provenance-linked scenes.
-12. The creator edits the storyboard and selects OpenAI or creator narration.
-13. The narration service generates per-scene audio, or validates the uploaded creator narration track.
+12. The creator edits the storyboard and selects OpenAI, Azure, or creator narration; OpenAI is the default.
+13. The narration service generates per-scene audio through the approved provider, or validates the uploaded creator narration track.
 14. The application creates an immutable render manifest from the approved storyboard and audio plan.
 15. The render service starts a Cloud Run Job that renders the Remotion composition and stores the MP4 in private Cloud Storage.
 16. The creator previews the completed film and downloads it through a short-lived signed URL.
@@ -456,7 +460,8 @@ Output: generated narration audio per scene, duration metadata, and a disclosure
 - Invalid model output is never persisted as trusted evidence; the call is retried once with validation feedback and then surfaced as a recoverable failure.
 - Restoration failure never blocks story creation.
 - Transcription failure allows the creator to paste or type a transcript.
-- Narration-generation failure offers retry or creator-narration upload and does not discard the approved storyboard.
+- Narration-generation failure offers retry, an explicitly approved switch to Azure Speech, or creator-narration upload and does not discard the approved storyboard.
+- Generated narration never switches providers or voices silently after the creator has approved a sample.
 - Film rendering is blocked when the storyboard has no approved evidence, contains unresolved provenance errors, lacks usable narration, or exceeds the configured duration limit.
 - Render jobs are idempotent. A failed render preserves its manifest and can be retried without regenerating the story or narration.
 - A completed MP4 is not exposed through a permanent public URL.
@@ -471,7 +476,7 @@ Output: generated narration audio per scene, duration metadata, and a disclosure
 - The product states that creators should have permission to upload and share the material.
 - Living-subject material requires a visible consent reminder before rendering.
 - The MVP does not synthesize a person's cloned voice.
-- Generated narration uses a standard OpenAI voice and is clearly disclosed as AI-generated in the film credits.
+- Generated narration uses a standard OpenAI or Azure voice and is clearly disclosed with its provider in the film credits.
 - Restored images are labeled and never replace originals.
 - A creator can permanently delete the project.
 
@@ -493,7 +498,8 @@ Output: generated narration audio per scene, duration metadata, and a disclosure
 - Mocked OpenAI analysis to evidence persistence
 - Transcription fallback behavior
 - Storyboard composition using only confirmed/corrected evidence
-- OpenAI narration and creator-narration adapter behavior
+- OpenAI, Azure Speech, and creator-narration adapter behavior
+- Provider failure requires explicit creator approval before a voice or provider change
 - Render job invocation, status updates, and signed film download
 - Project deletion across database and object storage adapters
 
@@ -518,7 +524,7 @@ The MVP succeeds when:
 - The rendered gift is a playable 1080p H.264 MP4 lasting approximately two to four minutes.
 - The result feels like a coherent keepsake film rather than an automated slideshow.
 - The creator can download the film, and the recipient can play the MP4 without a Legacy Studio account.
-- Generated OpenAI narration is disclosed in the end credits, and creator narration can replace it.
+- Generated narration is disclosed with its provider in the end credits, Azure Speech can serve as the approved backup, and creator narration can replace either provider.
 - The full flow can be demonstrated clearly in under three minutes.
 - The README explains setup, sample data, architecture, Codex collaboration, and GPT-5.6 usage.
 
@@ -541,6 +547,8 @@ The submission will emphasize that Codex accelerated product design, architectur
 - OpenAI GPT-5.6 model guidance: https://developers.openai.com/api/docs/models/gpt-5.6-sol
 - OpenAI transcription model: https://developers.openai.com/api/docs/models/gpt-4o-transcribe
 - OpenAI speech generation and disclosure guidance: https://developers.openai.com/api/docs/guides/text-to-speech
+- Microsoft Azure Speech text-to-speech overview: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/text-to-speech
+- Microsoft Azure Speech JavaScript/TypeScript quickstart: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/get-started-text-to-speech?pivots=programming-language-javascript
 - Google Cloud Run overview: https://docs.cloud.google.com/run/docs/overview/what-is-cloud-run
 - Google Cloud Storage signed URLs: https://docs.cloud.google.com/storage/docs/access-control/signed-urls
 - Google Cloud Run configuration and Secret Manager integration: https://docs.cloud.google.com/run/docs/configuring
