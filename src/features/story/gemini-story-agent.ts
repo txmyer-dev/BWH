@@ -181,7 +181,9 @@ export class GeminiStoryAgent implements StoryAgent, StoryGuideAgent {
 
   private async validateGuideEvidence(projectId: string, value: {voiceProfile: {traits: {evidenceItemIds: string[]}[]}; scenes: AgentScene[]}, approvedEvidence: Parameters<StoryGuideAgent['composeStoryboard']>[0]['approvedEvidence']) {
     const evidenceIds = new Set(approvedEvidence.map((item) => item.id));
-    const assetIds = new Set(this.listReadyAssetIds ? await this.listReadyAssetIds(projectId) : approvedEvidence.flatMap((item) => item.sourceAssetIds));
+    const suppliedAssetIds = new Set(approvedEvidence.flatMap((item) => item.sourceAssetIds));
+    const readyAssetIds = this.listReadyAssetIds ? new Set(await this.listReadyAssetIds(projectId)) : suppliedAssetIds;
+    const assetIds = new Set([...suppliedAssetIds].filter((id) => readyAssetIds.has(id)));
     if (value.voiceProfile.traits.some((trait) => trait.evidenceItemIds.some((id) => !evidenceIds.has(id)))) throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');
     for (const scene of value.scenes) {
       if (scene.narrationSentences.some((sentence) => !sentence.text.trim())) throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');

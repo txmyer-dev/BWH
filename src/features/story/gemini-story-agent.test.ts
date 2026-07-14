@@ -146,4 +146,17 @@ describe('GeminiStoryAgent', () => {
     const scene = {sceneType: 'media' as const, title: 'Scene', narrationSentences: [{text: 'Claim.', evidenceItemIds: [evidenceId]}], captionText: '', durationSeconds: 120, assetIds: [ids[0]], motionPreset: 'hold' as const, transitionPreset: 'crossfade' as const};
     await expect(new GeminiStoryAgent(client({...scene, durationSeconds: 121}), {model}, executor()).regenerateScene({projectId, scene, approvedEvidence})).rejects.toThrow('REGENERATED_SCENE_STRUCTURE_CHANGED');
   });
+
+  it('rejects a ready project asset that was never supplied through approved evidence', async () => {
+    const evidenceId = crypto.randomUUID(); const projectId = crypto.randomUUID();
+    const approvedEvidence = [{id: evidenceId, projectId, kind: 'creator_memory' as const, claim: 'Claim.', sourceAssetIds: [ids[0]], sourceExcerpt: 'Claim.'}];
+    const scene = {sceneType: 'media' as const, title: 'Scene', narrationSentences: [{text: 'Claim.', evidenceItemIds: [evidenceId]}], captionText: '', durationSeconds: 120, assetIds: [ids[1]], motionPreset: 'hold' as const, transitionPreset: 'crossfade' as const};
+    const agent = (value: unknown) => new GeminiStoryAgent(client(value), {model}, executor(), new InMemoryProviderStructuredResultStore(), undefined, async () => [ids[0], ids[1]]);
+    const draft = {title: 'Film', theme: 'Family', voiceProfile: {traits: [], coverage: 'restrained'}, scenes: [scene]};
+    await expect(agent(draft).composeStoryboard({projectId, approvedEvidence})).rejects.toThrow('INVALID_SCENE_ASSET');
+    await expect(agent(scene).regenerateScene({projectId, scene, approvedEvidence})).rejects.toThrow('INVALID_SCENE_ASSET');
+    const suppliedButNotReady = {...draft, scenes: [{...scene, assetIds: [ids[0]]}]};
+    const readinessGate = new GeminiStoryAgent(client(suppliedButNotReady), {model}, executor(), new InMemoryProviderStructuredResultStore(), undefined, async () => [ids[1]]);
+    await expect(readinessGate.composeStoryboard({projectId, approvedEvidence})).rejects.toThrow('INVALID_SCENE_ASSET');
+  });
 });
