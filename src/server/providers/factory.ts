@@ -1,10 +1,11 @@
 import {GoogleGenAI} from '@google/genai';
 
-import {GeminiStoryAgent, PostgresProviderStructuredResultStore, type GeminiClient, type ProviderStructuredResultStore} from '../../features/story/gemini-story-agent';
+import {GeminiStoryAgent, PostgresProviderStructuredResultStore, geminiPricing, type GeminiClient, type ProviderStructuredResultStore} from '../../features/story/gemini-story-agent';
 import {PostgresConsentRepository} from '../../features/consent/consent-repository';
 import {ConsentService} from '../../features/consent/consent-service';
 import {DefaultProviderExecutor} from '../../features/providers/provider-executor';
 import {PostgresProviderArtifactRepository, ProviderArtifactService} from '../../features/providers/provider-artifact-service';
+import {PostgresAssetRepository} from '../../features/media/asset-service';
 import {PostgresProviderRunRepository} from '../../features/providers/provider-run-repository';
 import {ProviderRunService} from '../../features/providers/provider-run-service';
 import type {ProviderExecutor} from '../../features/providers/types';
@@ -32,6 +33,7 @@ type ProviderDependencies = {
 };
 
 export const createProviderServices = (env: ProviderEnvironment, dependencies: ProviderDependencies) => {
+  geminiPricing(env.GEMINI_STORY_MODEL);
   const attested = env.GEMINI_REQUIRE_PAID_PROJECT === true &&
     env.GEMINI_PAID_PROJECT_VERIFIED === true &&
     Boolean(env.GEMINI_PAID_PROJECT_ID) && env.GEMINI_PAID_PROJECT_ID === env.GCP_PROJECT_ID;
@@ -56,5 +58,6 @@ export const createProviderServices = (env: ProviderEnvironment, dependencies: P
   const results = dependencies.resultStore ?? (dependencies.database ? new PostgresProviderStructuredResultStore(dependencies.database) : undefined);
   if (!results) throw new Error('PROVIDER_RESULT_STORE_REQUIRED');
   const artifacts = dependencies.database ? new ProviderArtifactService(new PostgresProviderArtifactRepository(dependencies.database)) : undefined;
-  return {executor, storyAgent: new GeminiStoryAgent(client, {model: env.GEMINI_STORY_MODEL}, executor, results, artifacts)};
+  const listReadyAssetIds = dependencies.database ? async (projectId: string) => (await new PostgresAssetRepository(dependencies.database!).listByProject(projectId)).filter((asset) => asset.projectId === projectId && asset.processingStatus === 'ready').map((asset) => asset.id) : undefined;
+  return {executor, storyAgent: new GeminiStoryAgent(client, {model: env.GEMINI_STORY_MODEL}, executor, results, artifacts, listReadyAssetIds)};
 };

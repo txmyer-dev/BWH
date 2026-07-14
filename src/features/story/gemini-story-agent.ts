@@ -28,7 +28,7 @@ Use only supplied asset and evidence IDs and allowed motion and transition prese
 
 type GeminiPart = {text?: string; inlineData?: {mimeType: string; data: string}; fileData?: {mimeType: string; fileUri: string}};
 export type GeminiClient = {
-  models: {generateContent(input: {model: string; contents: {role: 'user'; parts: GeminiPart[]}[]; config: {systemInstruction: string; responseMimeType: 'application/json'; responseJsonSchema: unknown; abortSignal: AbortSignal}}): Promise<{text?: string; usageMetadata?: {promptTokenCount?: number; candidatesTokenCount?: number}}>};
+  models: {generateContent(input: {model: string; contents: {role: 'user'; parts: GeminiPart[]}[]; config: {systemInstruction: string; responseMimeType: 'application/json'; responseJsonSchema: unknown; abortSignal: AbortSignal}}): Promise<{text?: string; usageMetadata?: {promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number}}>};
   files: {
     upload(input: {file: Blob; config: {mimeType: string; displayName: string}}): Promise<{name?: string; uri?: string; mimeType?: string}>;
     get(input: {name: string}): Promise<{name?: string; uri?: string; mimeType?: string; state?: string}>;
@@ -40,6 +40,17 @@ const parseDataUrl = (value: string) => {
   const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=]+)$/.exec(value);
   if (!match) throw new Error('UNSAFE_IMAGE_SOURCE');
   return {mimeType: match[1], base64: match[2], bytes: Buffer.from(match[2], 'base64')};
+};
+
+// Google Gemini API paid Standard pricing, verified 2026-07-14:
+// https://ai.google.dev/gemini-api/docs/pricing
+const GEMINI_PRICING = {
+  'gemini-3.1-flash-lite': {inputMicrosPerToken: 0.25, outputMicrosPerToken: 1.5, pricingVersion: 'google-gemini31-flashlite-std-20260714', reservationMicros: 25_000}
+} as const;
+export const geminiPricing = (model: string) => {
+  const pricing = GEMINI_PRICING[model as keyof typeof GEMINI_PRICING];
+  if (!pricing) throw new Error('GEMINI_MODEL_PRICING_UNKNOWN');
+  return pricing;
 };
 
 export interface ProviderStructuredResultStore {
@@ -69,21 +80,32 @@ export class InMemoryProviderStructuredResultStore implements ProviderStructured
 }
 
 export class GeminiStoryAgent implements StoryAgent, StoryGuideAgent {
-  constructor(private readonly client: GeminiClient, private readonly config: {model: string}, private readonly executor: ProviderExecutor, private readonly results: ProviderStructuredResultStore = new InMemoryProviderStructuredResultStore(), private readonly artifacts?: ProviderArtifactService) {}
+  private readonly pricing;
+  constructor(private readonly client: GeminiClient, private readonly config: {model: string}, private readonly executor: ProviderExecutor, private readonly results: ProviderStructuredResultStore = new InMemoryProviderStructuredResultStore(), private readonly artifacts?: ProviderArtifactService, private readonly listReadyAssetIds?: (projectId: string) => Promise<string[]>) { this.pricing = geminiPricing(config.model); }
 
   async analyzeCollection(input: CollectionAnalysisInput) {
     const assets = input.assets.map((asset) => analysisAssetSchema.parse(asset));
     const images = assets.filter((asset) => asset.kind === 'image');
     if (images.length < 3 || images.length > 7) throw new Error('THREE_TO_SEVEN_READY_IMAGES_REQUIRED');
-    for (const image of images) if (!image.imageBytes || image.imageUrl) throw new Error('UNSAFE_IMAGE_SOURCE');
+    for (const asset of assets) {
+      if (asset.imageUrl || (asset.kind === 'image' && !asset.imageBytes) || (asset.kind !== 'image' && asset.imageBytes)) throw new Error('UNSAFE_IMAGE_SOURCE');
+    }
     const dataCategories = ['selected_photos'];
     if (assets.some((asset) => Boolean(asset.caption))) dataCategories.push('captions');
     if (assets.some((asset) => asset.kind === 'text')) dataCategories.push('written_artifacts');
     if (assets.some((asset) => asset.kind === 'transcript')) dataCategories.push('transcripts');
     const result = await this.invoke({
       projectId: input.projectId, operation: 'analyze_collection', dataCategories,
-      canonicalInput: {assets: assets.map((asset) => ({...asset, imageBytes: asset.imageBytes ? `sha256:${createHash('sha256').update(asset.imageBytes).digest('hex')}` : undefined}))},
+      canonicalInput: {assets: assets.map((asset) => ({id: asset.id, kind: asset.kind, ...(asset.caption === undefined ? {} : {caption: asset.caption}), ...(asset.text === undefined ? {} : {text: asset.text}), ...(asset.imageBytes === undefined ? {} : {imageDigest: createHash('sha256').update(asset.imageBytes).digest('hex')})}))},
       instructions: ANALYSIS_INSTRUCTIONS, schema: collectionAnalysisSchema,
+      validate: (analysis) => {
+        const suppliedIds = new Set(assets.map((asset) => asset.id));
+        const ordered = new Set(analysis.ordering);
+        if (ordered.size !== images.length || images.some((asset) => !ordered.has(asset.id))) throw new Error('INVALID_IMAGE_ORDERING');
+        const citedIds = [...analysis.evidenceCandidates.flatMap((item) => item.sourceAssetIds), ...analysis.hypotheses.flatMap((item) => item.sourceAssetIds)];
+        if (citedIds.some((id) => !suppliedIds.has(id))) throw new Error('UNKNOWN_EVIDENCE_SOURCE');
+        return analysis;
+      },
       buildParts: async (signal, runId) => {
         const parts: GeminiPart[] = [];
         const uploaded: {name: string; artifactId?: string}[] = [];
@@ -123,50 +145,75 @@ export class GeminiStoryAgent implements StoryAgent, StoryGuideAgent {
         return {parts, cleanup};
       }
     });
-    const suppliedIds = new Set(assets.map((asset) => asset.id));
-    const ordered = new Set(result.ordering);
-    if (ordered.size !== images.length || images.some((asset) => !ordered.has(asset.id))) throw new Error('INVALID_IMAGE_ORDERING');
-    const citedIds = [...result.evidenceCandidates.flatMap((item) => item.sourceAssetIds), ...result.hypotheses.flatMap((item) => item.sourceAssetIds)];
-    if (citedIds.some((id) => !suppliedIds.has(id))) throw new Error('UNKNOWN_EVIDENCE_SOURCE');
     return result;
   }
 
   async generateQuestions(input: Parameters<StoryGuideAgent['generateQuestions']>[0]): Promise<QuestionDraft[]> {
-    const output = await this.guide(input.projectId, 'generate_questions', `Rank evidence gaps and return at most five neutral questions.\nUNTRUSTED_EVIDENCE_JSON\n${JSON.stringify(input.evidence)}`, guidedQuestionsOutputSchema, input);
+    const output = await this.guide(input.projectId, 'generate_questions', `Rank evidence gaps and return at most five neutral questions.\nUNTRUSTED_EVIDENCE_JSON\n${JSON.stringify(input.evidence)}`, guidedQuestionsOutputSchema, input, (value) => {
+      if (value.questions.length > 5) throw new Error('TOO_MANY_GUIDED_QUESTIONS');
+      if (value.questions.some((question) => question.leading)) throw new Error('LEADING_QUESTION_REJECTED');
+      if (new Set(value.questions.map((question) => question.rank)).size !== value.questions.length) throw new Error('INVALID_QUESTION_RANKING');
+      return value;
+    });
     return output.questions;
   }
 
   composeStoryboard(input: Parameters<StoryGuideAgent['composeStoryboard']>[0]): Promise<StoryboardDraft> {
-    return this.guide(input.projectId, 'compose_storyboard', `Compose a grounded storyboard.\nUNTRUSTED_APPROVED_EVIDENCE_JSON\n${JSON.stringify(input.approvedEvidence)}`, storyboardDraftSchema, input);
+    return this.guide(input.projectId, 'compose_storyboard', `Compose a grounded storyboard.\nUNTRUSTED_APPROVED_EVIDENCE_JSON\n${JSON.stringify(input.approvedEvidence)}`, storyboardDraftSchema, input, async (value) => {
+      await this.validateGuideEvidence(input.projectId, value, input.approvedEvidence);
+      const duration = value.scenes.reduce((sum, scene) => sum + scene.durationSeconds, 0);
+      if (duration < 120 || duration > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
+      return value;
+    });
   }
 
   regenerateScene(input: Parameters<StoryGuideAgent['regenerateScene']>[0]): Promise<AgentScene> {
-    return this.guide(input.projectId, 'regenerate_scene', `Regenerate only this scene.\nUNTRUSTED_SCENE_AND_EVIDENCE_JSON\n${JSON.stringify({scene: input.scene, approvedEvidence: input.approvedEvidence})}`, agentSceneSchema, input);
+    return this.guide(input.projectId, 'regenerate_scene', `Regenerate only this scene.\nUNTRUSTED_SCENE_AND_EVIDENCE_JSON\n${JSON.stringify({scene: input.scene, approvedEvidence: input.approvedEvidence})}`, agentSceneSchema, input, async (value) => {
+      await this.validateGuideEvidence(input.projectId, {voiceProfile: {traits: []}, scenes: [value]}, input.approvedEvidence);
+      if (value.sceneType !== input.scene.sceneType || value.title !== input.scene.title || value.captionText !== input.scene.captionText || value.durationSeconds !== input.scene.durationSeconds || value.motionPreset !== input.scene.motionPreset || value.transitionPreset !== input.scene.transitionPreset || JSON.stringify(value.assetIds) !== JSON.stringify(input.scene.assetIds)) throw new Error('REGENERATED_SCENE_STRUCTURE_CHANGED');
+      return value;
+    });
   }
 
-  private guide<T>(projectId: string, operation: 'generate_questions'|'compose_storyboard'|'regenerate_scene', text: string, schema: ZodType<T>, canonicalInput: unknown) {
-    return this.invoke({projectId, operation, dataCategories: ['approved_story_context'], canonicalInput, instructions: GUIDE_INSTRUCTIONS, schema, buildParts: async () => ({parts: [{text}]})});
+  private guide<T>(projectId: string, operation: 'generate_questions'|'compose_storyboard'|'regenerate_scene', text: string, schema: ZodType<T>, canonicalInput: unknown, validate: (value: T) => T | Promise<T>) {
+    return this.invoke({projectId, operation, dataCategories: ['approved_story_context'], canonicalInput, instructions: GUIDE_INSTRUCTIONS, schema, validate, buildParts: async () => ({parts: [{text}]})});
   }
 
-  private async invoke<T>(input: {projectId: string; operation: 'analyze_collection'|'generate_questions'|'compose_storyboard'|'regenerate_scene'; dataCategories: string[]; canonicalInput: unknown; instructions: string; schema: ZodType<T>; buildParts: (signal: AbortSignal, runId: string) => Promise<{parts: GeminiPart[]; cleanup?: () => Promise<void>}>}): Promise<T> {
+  private async validateGuideEvidence(projectId: string, value: {voiceProfile: {traits: {evidenceItemIds: string[]}[]}; scenes: AgentScene[]}, approvedEvidence: Parameters<StoryGuideAgent['composeStoryboard']>[0]['approvedEvidence']) {
+    const evidenceIds = new Set(approvedEvidence.map((item) => item.id));
+    const assetIds = new Set(this.listReadyAssetIds ? await this.listReadyAssetIds(projectId) : approvedEvidence.flatMap((item) => item.sourceAssetIds));
+    if (value.voiceProfile.traits.some((trait) => trait.evidenceItemIds.some((id) => !evidenceIds.has(id)))) throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');
+    for (const scene of value.scenes) {
+      if (scene.narrationSentences.some((sentence) => !sentence.text.trim())) throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');
+      if (scene.narrationSentences.some((sentence) => sentence.evidenceItemIds.some((id) => !evidenceIds.has(id)))) throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');
+      if (scene.assetIds.some((id) => !assetIds.has(id))) throw new Error('INVALID_SCENE_ASSET');
+    }
+  }
+
+  private async invoke<T>(input: {projectId: string; operation: 'analyze_collection'|'generate_questions'|'compose_storyboard'|'regenerate_scene'; dataCategories: string[]; canonicalInput: unknown; instructions: string; schema: ZodType<T>; validate: (value: T) => T | Promise<T>; buildParts: (signal: AbortSignal, runId: string) => Promise<{parts: GeminiPart[]; cleanup?: () => Promise<void>}>}): Promise<T> {
     const executed = await this.executor.execute({
       projectId: input.projectId, provider: 'google_gemini', model: this.config.model, operation: input.operation,
-      dataCategories: input.dataCategories, canonicalInput: input.canonicalInput, estimatedCostMicros: 10_000, pricingVersion: 'gemini-3.1-flash-lite-2026-07',
+      dataCategories: input.dataCategories, canonicalInput: input.canonicalInput, estimatedCostMicros: this.pricing.reservationMicros, pricingVersion: this.pricing.pricingVersion,
       dispatch: async ({signal, runId}) => {
         const built = await input.buildParts(signal, runId);
         try {
           const response = await this.client.models.generateContent({model: this.config.model, contents: [{role: 'user', parts: built.parts}], config: {systemInstruction: input.instructions, responseMimeType: 'application/json', responseJsonSchema: z.toJSONSchema(input.schema), abortSignal: signal}});
           if (!response.text) throw new Error('INVALID_MODEL_OUTPUT');
-          const result = input.schema.parse(JSON.parse(response.text));
-          return {result, usage: {actualCostMicros: 0, requestCount: 1, metadata: {promptTokens: response.usageMetadata?.promptTokenCount ?? 0, outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0}}};
+          const result = await input.validate(input.schema.parse(JSON.parse(response.text)));
+          const promptTokens = response.usageMetadata?.promptTokenCount;
+          const outputTokens = response.usageMetadata?.candidatesTokenCount;
+          const thinkingTokens = response.usageMetadata?.thoughtsTokenCount ?? 0;
+          const billableTokens = (promptTokens ?? 0) + (outputTokens ?? 0) + thinkingTokens;
+          const actualCostMicros = promptTokens === undefined || outputTokens === undefined ? this.pricing.reservationMicros : billableTokens === 0 ? 0 : Math.max(1, Math.ceil(promptTokens * this.pricing.inputMicrosPerToken + (outputTokens + thinkingTokens) * this.pricing.outputMicrosPerToken));
+          return {result, usage: {actualCostMicros, requestCount: 1, metadata: {promptTokens: promptTokens ?? 0, outputTokens: outputTokens ?? 0, thinkingTokens, pricingVersion: this.pricing.pricingVersion}}};
         } finally { await built.cleanup?.(); }
       },
       loadResult: async (runId) => {
-        return input.schema.parse(await this.results.load(input.projectId, runId));
+        return input.validate(input.schema.parse(await this.results.load(input.projectId, runId)));
       },
-      persistResult: async (writer, claim, result) => this.results.save(writer, input.projectId, claim.runId, input.schema.parse(result)),
+      persistResult: async (writer, claim, result) => this.results.save(writer, input.projectId, claim.runId, await input.validate(input.schema.parse(result))),
       cleanupOrphanedResult: async () => undefined
     });
-    return input.schema.parse(executed.result);
+    return input.validate(input.schema.parse(executed.result));
   }
 }

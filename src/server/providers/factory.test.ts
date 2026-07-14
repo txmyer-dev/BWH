@@ -30,4 +30,8 @@ describe('createProviderServices', () => {
   it('rejects default live construction outside production without paid-project attestation', () => {
     expect(() => createProviderServices({...env, NODE_ENV: 'development', GEMINI_REQUIRE_PAID_PROJECT: false}, {executor: deps.executor, resultStore: deps.resultStore} as never)).toThrow('GEMINI_PAID_PROJECT_NOT_VERIFIED');
   });
+
+  it('fails closed for an unpriced configured Gemini model', () => {
+    expect(() => createProviderServices({...env, GEMINI_STORY_MODEL: 'gemini-future'}, deps as never)).toThrow('GEMINI_MODEL_PRICING_UNKNOWN');
+  });
 });
