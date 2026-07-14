@@ -17,8 +17,12 @@ import type {EvidenceItem} from '@/features/evidence/schemas';
 import type {Question, Storyboard} from '@/features/story/story-service';
 import {
   displayEvidenceClaim,
+  buildStoryboardOptions,
   mergeStoryboardResponse,
-  serializeSceneEdit
+  rebaseStoryboardConflict,
+  shouldClearRequestDirty,
+  serializeSceneEdit,
+  type StoryboardAssetOptionSource
 } from '@/features/story/storyboard-editor-state';
 
 type ImageDraft = {
@@ -73,12 +77,17 @@ export default function ProjectPage({
   );
   const [message, setMessage] = useState('Add at least three photographs.');
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
+  const [availableAssets, setAvailableAssets] = useState<StoryboardAssetOptionSource[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [storyboard, setStoryboard] = useState<Storyboard | null>(null);
+  const storyboardRef = useRef<Storyboard | null>(null);
   const [corrections, setCorrections] = useState<Record<string, string>>({});
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const draggedSceneId = useRef<string | null>(null);
   const dirtySceneIds = useRef(new Set<string>());
+  const sceneEditGenerations = useRef(new Map<string, number>());
+  const orderGeneration = useRef(0);
+  const orderDirty = useRef(false);
   const previewUrls = useRef<string[]>([]);
 
   useEffect(
@@ -87,6 +96,7 @@ export default function ProjectPage({
     },
     []
   );
+  useEffect(() => { storyboardRef.current = storyboard; }, [storyboard]);
 
   const chooseImages = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []).slice(0, 7);
@@ -253,9 +263,13 @@ export default function ProjectPage({
   };
 
   const loadEvidence = async () => {
-    const response = await fetch(`/api/projects/${projectId}/evidence`);
-    if (!response.ok) return setMessage('The record could not be opened.');
-    setEvidence(await response.json());
+    const [evidenceResponse, assetsResponse] = await Promise.all([
+      fetch(`/api/projects/${projectId}/evidence`),
+      fetch(`/api/projects/${projectId}/assets/upload-url`)
+    ]);
+    if (!evidenceResponse.ok || !assetsResponse.ok) return setMessage('The record could not be opened.');
+    setEvidence(await evidenceResponse.json());
+    setAvailableAssets(await assetsResponse.json());
     setMessage('Review each proposed detail before it can shape the film.');
   };
 
@@ -288,6 +302,9 @@ export default function ProjectPage({
     });
     if (!response.ok) return setMessage('Confirm at least one detail before shaping the film.');
     dirtySceneIds.current.clear();
+    sceneEditGenerations.current.clear();
+    orderDirty.current = false;
+    orderGeneration.current = 0;
     setStoryboard(await response.json());
     setMessage('Your film outline is ready to review.');
   };
@@ -304,46 +321,73 @@ export default function ProjectPage({
     if (!storyboard) return;
     const scene = storyboard.scenes.find((entry) => entry.id === sceneId);
     if (!scene) return;
+    const capturedGeneration = sceneEditGenerations.current.get(sceneId) ?? 0;
     const change = serializeSceneEdit(scene);
     const response = await fetch(`/api/projects/${projectId}/storyboard`, {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action: 'edit_scene', storyboardId: storyboard.id, sceneId, change, expectedRevision: storyboard.revision})
     });
+    if (response.status === 409) return recoverStoryboardConflict();
     if (!response.ok) return setMessage('That scene could not be saved.');
     const incoming = await response.json() as Storyboard;
-    dirtySceneIds.current.delete(sceneId);
-    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, dirtySceneIds.current) : incoming);
+    if (shouldClearRequestDirty(capturedGeneration, sceneEditGenerations.current.get(sceneId) ?? 0)) dirtySceneIds.current.delete(sceneId);
+    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, {dirtySceneIds: dirtySceneIds.current, preserveLocalOrder: orderDirty.current}) : incoming);
     setMessage('Scene saved.');
   };
 
   const regenerateScene = async (sceneId: string) => {
     if (!storyboard) return;
+    const capturedGeneration = sceneEditGenerations.current.get(sceneId) ?? 0;
     const response = await fetch(`/api/projects/${projectId}/storyboard`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action: 'regenerate_scene', storyboardId: storyboard.id, sceneId, expectedRevision: storyboard.revision})
     });
+    if (response.status === 409) return recoverStoryboardConflict();
     if (!response.ok) return setMessage('That scene could not be reshaped.');
     const incoming = await response.json() as Storyboard;
-    dirtySceneIds.current.delete(sceneId);
-    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, dirtySceneIds.current) : incoming);
+    if (shouldClearRequestDirty(capturedGeneration, sceneEditGenerations.current.get(sceneId) ?? 0)) dirtySceneIds.current.delete(sceneId);
+    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, {dirtySceneIds: dirtySceneIds.current, preserveLocalOrder: orderDirty.current}) : incoming);
     setMessage('Only the selected scene was reshaped.');
   };
 
   const saveOrder = async () => {
     if (!storyboard) return;
+    const capturedOrderGeneration = orderGeneration.current;
     const response = await fetch(`/api/projects/${projectId}/storyboard`, {
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action: 'reorder_scenes', storyboardId: storyboard.id, orderedSceneIds: storyboard.scenes.map((scene) => scene.id), expectedRevision: storyboard.revision})
     });
+    if (response.status === 409) return recoverStoryboardConflict();
     if (!response.ok) return setMessage('The scene order could not be saved.');
     const incoming = await response.json() as Storyboard;
-    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, dirtySceneIds.current) : incoming);
+    if (shouldClearRequestDirty(capturedOrderGeneration, orderGeneration.current)) orderDirty.current = false;
+    setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, {dirtySceneIds: dirtySceneIds.current, preserveLocalOrder: orderDirty.current}) : incoming);
     setMessage('Scene order saved.');
   };
 
   const updateSceneDraft = (sceneId: string, change: Partial<Storyboard['scenes'][number]>) => {
     dirtySceneIds.current.add(sceneId);
-    setStoryboard((current) => current && ({...current, scenes: current.scenes.map((scene) => scene.id === sceneId ? {...scene, ...change} : scene)}));
+    sceneEditGenerations.current.set(sceneId, (sceneEditGenerations.current.get(sceneId) ?? 0) + 1);
+    setStoryboard((current) => {
+      const next = current && ({...current, scenes: current.scenes.map((scene) => scene.id === sceneId ? {...scene, ...change} : scene)});
+      storyboardRef.current = next;
+      return next;
+    });
+  };
+
+  const recoverStoryboardConflict = async () => {
+    if (!storyboardRef.current) return;
+    try {
+      const rebased = await rebaseStoryboardConflict({
+        projectId, getCurrent: () => storyboardRef.current!, dirtySceneIds: dirtySceneIds.current,
+        preserveLocalOrder: orderDirty.current, fetcher: (url) => fetch(url)
+      });
+      storyboardRef.current = rebased;
+      setStoryboard(rebased);
+      setMessage('This film changed elsewhere. Your edits are preserved with the latest version. Review them, then save again.');
+    } catch {
+      setMessage('This film changed elsewhere. Your edits are still here, but the latest version could not be loaded.');
+    }
   };
 
   const moveScene = (sceneId: string, offset: number) => setStoryboard((current) => {
@@ -354,8 +398,14 @@ export default function ProjectPage({
     const scenes = [...current.scenes];
     const [moving] = scenes.splice(from, 1);
     scenes.splice(to, 0, moving);
-    return {...current, scenes};
+    orderDirty.current = true;
+    orderGeneration.current += 1;
+    const next = {...current, scenes};
+    storyboardRef.current = next;
+    return next;
   });
+
+  const sourceOptions = buildStoryboardOptions(projectId, availableAssets, evidence);
 
   return (
     <main className="project-form-page">
@@ -517,13 +567,17 @@ export default function ProjectPage({
               onDrop={() => {
                 const dragged = draggedSceneId.current;
                 if (!dragged || dragged === scene.id) return;
+                orderDirty.current = true;
+                orderGeneration.current += 1;
                 setStoryboard((current) => {
                   if (!current) return current;
                   const moving = current.scenes.find((entry) => entry.id === dragged);
                   if (!moving) return current;
                   const without = current.scenes.filter((entry) => entry.id !== dragged);
                   without.splice(index, 0, moving);
-                  return {...current, scenes: without};
+                  const next = {...current, scenes: without};
+                  storyboardRef.current = next;
+                  return next;
                 });
               }}>
               <span aria-label={`Drag scene ${index + 1}`}>↕ Scene {index + 1}</span>
@@ -536,8 +590,18 @@ export default function ProjectPage({
               <label>Narration<textarea value={scene.narrationText} onChange={(event) => updateSceneDraft(scene.id, {narrationText: event.target.value})} /></label>
               <label>Caption<input value={scene.captionText} onChange={(event) => updateSceneDraft(scene.id, {captionText: event.target.value})} /></label>
               <label>Duration in seconds<input type="number" min="1" max="240" step="0.5" value={scene.durationSeconds} onChange={(event) => updateSceneDraft(scene.id, {durationSeconds: Number(event.target.value)})} /></label>
-              <label>Asset IDs (comma separated)<input value={scene.assetIds.join(', ')} onChange={(event) => updateSceneDraft(scene.id, {assetIds: event.target.value.split(',').map((value) => value.trim()).filter(Boolean)})} /></label>
-              <label>Evidence IDs (comma separated)<input value={scene.evidenceItemIds.join(', ')} onChange={(event) => updateSceneDraft(scene.id, {evidenceItemIds: event.target.value.split(',').map((value) => value.trim()).filter(Boolean)})} /></label>
+              <fieldset><legend>Pictures and recordings</legend>
+                {sourceOptions.assets.length ? sourceOptions.assets.map((option) => <label key={option.id}>
+                  <input type="checkbox" checked={scene.assetIds.includes(option.id)} onChange={(event) => updateSceneDraft(scene.id, {assetIds: event.target.checked ? [...new Set([...scene.assetIds, option.id])] : scene.assetIds.filter((id) => id !== option.id)})} />
+                  {option.label}
+                </label>) : <p>Review the record to load available pieces.</p>}
+              </fieldset>
+              <fieldset><legend>Details supporting this scene</legend>
+                {sourceOptions.evidence.length ? sourceOptions.evidence.map((option) => <label key={option.id}>
+                  <input type="checkbox" checked={scene.evidenceItemIds.includes(option.id)} onChange={(event) => updateSceneDraft(scene.id, {evidenceItemIds: event.target.checked ? [...new Set([...scene.evidenceItemIds, option.id])] : scene.evidenceItemIds.filter((id) => id !== option.id)})} />
+                  {option.label}
+                </label>) : <p>Confirm details in the record before selecting them.</p>}
+              </fieldset>
               <label>Motion<select value={scene.motionPreset} onChange={(event) => updateSceneDraft(scene.id, {motionPreset: event.target.value as typeof scene.motionPreset})}>
                 {['hold', 'slow_zoom_in', 'slow_pan_left', 'slow_pan_right'].map((value) => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}
               </select></label>

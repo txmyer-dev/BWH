@@ -16,13 +16,15 @@ type RouteContext = {params: Promise<{projectId: string}>};
 
 const services = () => {
   const database = getDatabase();
+  const assetRepository = new PostgresAssetRepository(database);
   const projectService = new ProjectService(
     new PostgresProjectRepository(database)
   );
   return {
     projectService,
+    assetRepository,
     assetService: new AssetService(
-      new PostgresAssetRepository(database),
+      assetRepository,
       new GcsMediaStorage(parseEnv(process.env).GCS_BUCKET),
       projectService
     )
@@ -37,6 +39,23 @@ const errorResponse = (error: unknown) => {
   const status = code === 'PROJECT_FORBIDDEN' ? 403 : code === 'ASSET_NOT_FOUND' ? 404 : 400;
   return NextResponse.json({error: code}, {status});
 };
+
+export async function GET(_request: Request, context: RouteContext) {
+  const {projectId} = await context.params;
+  try {
+    const database = getDatabase();
+    const projectService = new ProjectService(new PostgresProjectRepository(database));
+    const assetRepository = new PostgresAssetRepository(database);
+    await projectService.assertProjectOwner(projectId, await ownerToken(projectId));
+    return NextResponse.json((await assetRepository.listByProject(projectId)).map((asset) => ({
+      id: asset.id, projectId: asset.projectId, kind: asset.kind,
+      processingStatus: asset.processingStatus, caption: asset.caption,
+      sequenceOrder: asset.sequenceOrder
+    })));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
 
 export async function POST(request: Request, context: RouteContext) {
   const {projectId} = await context.params;

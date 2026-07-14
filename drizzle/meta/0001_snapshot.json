@@ -1,6 +1,6 @@
 {
-  "id": "f541e3e6-895d-480e-8681-4a3174ea8d04",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "d3e9d4c0-cd80-4ffa-832c-ec25848e8c0a",
+  "prevId": "f541e3e6-895d-480e-8681-4a3174ea8d04",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -862,6 +862,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 180
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "render_manifest": {
           "name": "render_manifest",

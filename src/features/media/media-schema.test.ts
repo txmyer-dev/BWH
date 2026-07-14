@@ -19,12 +19,12 @@ describe('asset database constraints', () => {
     );
   });
 
-  it('ships one fresh migration with every media invariant from table creation', () => {
+  it('keeps media invariants in the original migration while later migrations remain ordered', () => {
     const migrationDirectory = join(process.cwd(), 'drizzle');
     const migrations = readdirSync(migrationDirectory).filter((name) =>
       /^\d+_.+\.sql$/.test(name)
     );
-    expect(migrations).toHaveLength(1);
+    expect(migrations.length).toBeGreaterThanOrEqual(2);
     expect(migrations[0]).toMatch(/^0000_/);
 
     const sql = readFileSync(join(migrationDirectory, migrations[0]), 'utf8');
