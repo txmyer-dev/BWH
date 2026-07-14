@@ -1,0 +1,136 @@
+import {describe, expect, it} from 'vitest';
+
+import type {EvidenceItem} from '../evidence/schemas';
+import {
+  InMemoryStoryRepository,
+  StoryService,
+  type StoryGuideAgent
+} from './story-service';
+
+const projectId = crypto.randomUUID();
+const otherProjectId = crypto.randomUUID();
+const assetId = crypto.randomUUID();
+
+const approved = (overrides: Partial<EvidenceItem> = {}): EvidenceItem => ({
+  id: crypto.randomUUID(),
+  projectId,
+  kind: 'creator_memory',
+  claim: 'Mara opened the neighborhood bakery in 1962.',
+  originalClaim: 'Mara opened the neighborhood bakery in 1962.',
+  sourceAssetIds: [assetId],
+  sourceExcerpt: 'I remember opening the bakery in 1962.',
+  confidence: 1,
+  verificationStatus: 'confirmed',
+  correction: null,
+  ...overrides
+});
+
+const createAgent = (): StoryGuideAgent => ({
+  generateQuestions: async () => [
+    {question: 'Did she enjoy the work?', reason: 'leading', rank: 1, leading: true},
+    ...Array.from({length: 6}, (_, index) => ({
+      question: `What detail belongs to gap ${index + 1}?`,
+      reason: `Gap ${index + 1}`,
+      rank: index + 2,
+      leading: false
+    }))
+  ],
+  composeStoryboard: async ({approvedEvidence}) => ({
+    title: 'The Corner Bakery',
+    theme: 'Care expressed through daily work',
+    voiceProfile: {
+      traits: [{trait: 'Plainspoken', description: 'Uses direct language.', evidenceItemIds: [approvedEvidence[0].id]}],
+      coverage: 'grounded' as const
+    },
+    scenes: [
+      {
+        sceneType: 'media' as const,
+        title: 'Opening the doors',
+        narrationSentences: [{text: 'Mara opened the neighborhood bakery in 1962.', evidenceItemIds: [approvedEvidence[0].id]}],
+        captionText: 'The bakery, 1962', durationSeconds: 120,
+        assetIds: [assetId], motionPreset: 'slow_zoom_in' as const,
+        transitionPreset: 'crossfade' as const
+      }
+    ]
+  }),
+  regenerateScene: async ({scene, approvedEvidence}) => ({
+    ...scene,
+    title: 'A revised opening',
+    narrationSentences: [{text: 'Mara welcomed her neighbors in 1962.', evidenceItemIds: [approvedEvidence[0].id]}]
+  })
+});
+
+const createService = (evidence: EvidenceItem[], assertCreator = async () => undefined) => {
+  const repository = new InMemoryStoryRepository();
+  return {repository, service: new StoryService(repository, createAgent(), {listByProject: async () => evidence}, assertCreator)};
+};
+
+describe('StoryService guardrails', () => {
+  it('returns at most five ranked, non-leading questions derived from ranked gaps', async () => {
+    const {service} = createService([approved()]);
+    const questions = await service.generateQuestions(projectId);
+    expect(questions).toHaveLength(5);
+    expect(questions.map((question) => question.rank)).toEqual([2, 3, 4, 5, 6]);
+    expect(questions.every((question) => !question.leading)).toBe(true);
+  });
+
+  it('refuses to compose a storyboard without confirmed or corrected evidence', async () => {
+    const {service} = createService([approved({verificationStatus: 'proposed'})]);
+    await expect(service.composeStoryboard(projectId)).rejects.toThrow('APPROVED_EVIDENCE_REQUIRED');
+  });
+
+  it('never treats a model hypothesis as factual evidence even after review', async () => {
+    const {service} = createService([approved({kind: 'model_hypothesis', verificationStatus: 'confirmed'})]);
+    await expect(service.composeStoryboard(projectId)).rejects.toThrow('APPROVED_EVIDENCE_REQUIRED');
+  });
+
+  it('rejects factual narration and voice traits without project-owned approved evidence', async () => {
+    const foreign = approved({id: crypto.randomUUID(), projectId: otherProjectId});
+    const agent = createAgent();
+    agent.composeStoryboard = async () => ({
+      title: 'Unsafe', theme: 'Unsafe',
+      voiceProfile: {traits: [{trait: 'Warm', description: 'Warm.', evidenceItemIds: [foreign.id]}], coverage: 'grounded'},
+      scenes: [{sceneType: 'media', title: 'Unsafe', narrationSentences: [{text: 'An unsupported fact.', evidenceItemIds: [foreign.id]}], captionText: '', durationSeconds: 120, assetIds: [assetId], motionPreset: 'hold', transitionPreset: 'fade_to_black'}]
+    });
+    const repository = new InMemoryStoryRepository();
+    const service = new StoryService(repository, agent, {listByProject: async () => [approved()]}, async () => undefined);
+    await expect(service.composeStoryboard(projectId)).rejects.toThrow('UNAPPROVED_EVIDENCE_REFERENCE');
+  });
+
+  it('regenerates one scene while preserving every other ID, order, and creator edit', async () => {
+    const {service} = createService([approved()]);
+    const storyboard = await service.composeStoryboard(projectId);
+    const extra = await service.addScene(projectId, storyboard.id, {
+      sceneType: 'dedication', title: 'For our family', narrationText: '', captionText: 'With love',
+      durationSeconds: 10, assetIds: [], evidenceItemIds: [], motionPreset: 'hold', transitionPreset: 'fade_to_black'
+    });
+    await service.editScene(projectId, storyboard.id, extra.id, {captionText: 'Creator-written dedication'});
+    const before = await service.getStoryboard(projectId);
+    const regenerated = await service.regenerateScene(projectId, storyboard.id, storyboard.scenes[0].id);
+    expect(regenerated.scenes.map((scene) => scene.id)).toEqual(before?.scenes.map((scene) => scene.id));
+    expect(regenerated.scenes[1]).toMatchObject({id: extra.id, captionText: 'Creator-written dedication'});
+    expect(regenerated.scenes[0].title).toBe('A revised opening');
+  });
+
+  it('requires owner authorization and rejects cross-project storyboard IDs', async () => {
+    const denied = createService([approved()], async () => { throw new Error('PROJECT_FORBIDDEN'); });
+    await expect(denied.service.generateQuestions(projectId)).rejects.toThrow('PROJECT_FORBIDDEN');
+
+    const first = createService([approved()]);
+    const storyboard = await first.service.composeStoryboard(projectId);
+    await expect(first.service.editScene(otherProjectId, storyboard.id, storyboard.scenes[0].id, {title: 'No'})).rejects.toThrow('STORYBOARD_NOT_FOUND');
+  });
+
+  it('rejects narration edits without approved provenance and cross-project asset IDs', async () => {
+    const fact = approved();
+    const {service} = createService([fact]);
+    const storyboard = await service.composeStoryboard(projectId);
+    await expect(service.addScene(projectId, storyboard.id, {
+      sceneType: 'media', title: 'Unsupported', narrationText: 'A new factual claim.', captionText: '', durationSeconds: 5,
+      assetIds: [crypto.randomUUID()], evidenceItemIds: [], motionPreset: 'hold', transitionPreset: 'crossfade'
+    })).rejects.toThrow('NARRATION_EVIDENCE_REQUIRED');
+    await expect(service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {
+      assetIds: [crypto.randomUUID()]
+    })).rejects.toThrow('CROSS_PROJECT_ASSET');
+  });
+});

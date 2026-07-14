@@ -13,6 +13,8 @@ import {
   createWaitingUploadStatus,
   type UploadStatus
 } from '@/features/media/upload-ui-state';
+import type {EvidenceItem} from '@/features/evidence/schemas';
+import type {Question, Storyboard} from '@/features/story/story-service';
 
 type ImageDraft = {
   file: File;
@@ -65,6 +67,12 @@ export default function ProjectPage({
     createWaitingUploadStatus
   );
   const [message, setMessage] = useState('Add at least three photographs.');
+  const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [storyboard, setStoryboard] = useState<Storyboard | null>(null);
+  const [corrections, setCorrections] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const draggedSceneId = useRef<string | null>(null);
   const previewUrls = useRef<string[]>([]);
 
   useEffect(
@@ -238,8 +246,107 @@ export default function ProjectPage({
     }
   };
 
+  const loadEvidence = async () => {
+    const response = await fetch(`/api/projects/${projectId}/evidence`);
+    if (!response.ok) return setMessage('The record could not be opened.');
+    setEvidence(await response.json());
+    setMessage('Review each proposed detail before it can shape the film.');
+  };
+
+  const findStory = async () => {
+    const response = await fetch(`/api/projects/${projectId}/analyze`, {method: 'POST'});
+    setMessage(response.ok ? 'We are finding the story in your pieces. Return to review the record when it is ready.' : 'The story could not be prepared yet.');
+  };
+
+  const reviewEvidence = async (item: EvidenceItem, action: 'confirm' | 'correct' | 'reject') => {
+    const response = await fetch(`/api/projects/${projectId}/evidence`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action, evidenceId: item.id, ...(action === 'correct' ? {correction: corrections[item.id]} : {})})
+    });
+    if (!response.ok) return setMessage('That record change could not be saved.');
+    const saved = await response.json() as EvidenceItem;
+    setEvidence((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
+    setMessage('Record saved.');
+  };
+
+  const generateQuestions = async () => {
+    const response = await fetch(`/api/projects/${projectId}/questions`, {method: 'POST'});
+    if (!response.ok) return setMessage('The questions could not be prepared yet.');
+    setQuestions(await response.json());
+    setMessage('Your questions are ready.');
+  };
+
+  const composeStoryboard = async () => {
+    const response = await fetch(`/api/projects/${projectId}/storyboard`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action: 'compose'})
+    });
+    if (!response.ok) return setMessage('Confirm at least one detail before shaping the film.');
+    setStoryboard(await response.json());
+    setMessage('Your film outline is ready to review.');
+  };
+
+  const saveAnswer = async (questionId: string) => {
+    const response = await fetch(`/api/projects/${projectId}/questions`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({questionId, answer: answers[questionId]})
+    });
+    setMessage(response.ok ? 'Memory saved to the record.' : 'That memory could not be saved.');
+  };
+
+  const saveScene = async (sceneId: string) => {
+    if (!storyboard) return;
+    const scene = storyboard.scenes.find((entry) => entry.id === sceneId);
+    if (!scene) return;
+    const change = {
+      sceneType: scene.sceneType, title: scene.title, narrationText: scene.narrationText,
+      captionText: scene.captionText, durationSeconds: scene.durationSeconds,
+      assetIds: scene.assetIds, evidenceItemIds: scene.evidenceItemIds,
+      motionPreset: scene.motionPreset, transitionPreset: scene.transitionPreset
+    };
+    const response = await fetch(`/api/projects/${projectId}/storyboard`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'edit_scene', storyboardId: storyboard.id, sceneId, change})
+    });
+    if (!response.ok) return setMessage('That scene could not be saved.');
+    setStoryboard(await response.json()); setMessage('Scene saved.');
+  };
+
+  const regenerateScene = async (sceneId: string) => {
+    if (!storyboard) return;
+    const response = await fetch(`/api/projects/${projectId}/storyboard`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'regenerate_scene', storyboardId: storyboard.id, sceneId})
+    });
+    if (!response.ok) return setMessage('That scene could not be reshaped.');
+    setStoryboard(await response.json()); setMessage('Only the selected scene was reshaped.');
+  };
+
+  const saveOrder = async () => {
+    if (!storyboard) return;
+    const response = await fetch(`/api/projects/${projectId}/storyboard`, {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action: 'reorder_scenes', storyboardId: storyboard.id, orderedSceneIds: storyboard.scenes.map((scene) => scene.id)})
+    });
+    if (!response.ok) return setMessage('The scene order could not be saved.');
+    setStoryboard(await response.json()); setMessage('Scene order saved.');
+  };
+
+  const moveScene = (sceneId: string, offset: number) => setStoryboard((current) => {
+    if (!current) return current;
+    const from = current.scenes.findIndex((scene) => scene.id === sceneId);
+    const to = from + offset;
+    if (from < 0 || to < 0 || to >= current.scenes.length) return current;
+    const scenes = [...current.scenes];
+    const [moving] = scenes.splice(from, 1);
+    scenes.splice(to, 0, moving);
+    return {...current, scenes};
+  });
+
   return (
     <main className="project-form-page">
+      <nav aria-label="Chapter progress" className="chapter-stepper">
+        <ol>{['Pieces', 'Story', 'Questions', 'Record', 'Film'].map((step) => <li key={step}>{step}</li>)}</ol>
+      </nav>
       <section aria-labelledby="gather-title">
         <p className="eyebrow">Gather the pieces</p>
         <h1 id="gather-title">Bring the chapter together.</h1>
@@ -347,6 +454,74 @@ export default function ProjectPage({
           <p role="status">{message}</p>
           <button type="submit">Preserve these pieces</button>
         </form>
+      </section>
+      <section aria-labelledby="story-review-title" className="story-workflow">
+        <p className="eyebrow">Shape the chapter</p>
+        <h2 id="story-review-title">Keep every detail true to your family.</h2>
+        <div className="workflow-actions">
+          <button type="button" onClick={findStory}>Find the story</button>
+          <button type="button" onClick={loadEvidence}>Review the record</button>
+          <button type="button" onClick={generateQuestions}>Prepare my questions</button>
+          <button type="button" onClick={composeStoryboard}>Shape the film</button>
+        </div>
+
+        {evidence.length > 0 && <section aria-labelledby="record-title">
+          <h3 id="record-title">Review the record</h3>
+          {evidence.map((item) => <article key={item.id} className="record-card">
+            <p>{item.kind === 'model_hypothesis' || item.verificationStatus === 'proposed' ? <strong>Needs your help</strong> : <strong>{item.verificationStatus}</strong>}</p>
+            <p>{item.claim}</p>
+            {item.verificationStatus === 'proposed' && <>
+              <button type="button" onClick={() => reviewEvidence(item, 'confirm')}>Confirm fact</button>
+              <label>Correction
+                <input value={corrections[item.id] ?? ''} onChange={(event) => setCorrections((current) => ({...current, [item.id]: event.target.value}))} />
+              </label>
+              <button type="button" disabled={!corrections[item.id]?.trim()} onClick={() => reviewEvidence(item, 'correct')}>Save correction</button>
+              <button type="button" onClick={() => reviewEvidence(item, 'reject')}>Reject suggestion</button>
+            </>}
+          </article>)}
+        </section>}
+
+        {questions.length > 0 && <section aria-labelledby="questions-title">
+          <h3 id="questions-title">A few details need your help</h3>
+          <ol>{questions.slice(0, 5).map((question) => <li key={question.id}><p>{question.question}</p><small>Needs your help: {question.reason}</small>
+            <label>Your answer<textarea value={answers[question.id] ?? ''} onChange={(event) => setAnswers((current) => ({...current, [question.id]: event.target.value}))} /></label>
+            <button type="button" disabled={!answers[question.id]?.trim()} onClick={() => saveAnswer(question.id)}>Save answer</button>
+          </li>)}</ol>
+        </section>}
+
+        {storyboard && <section aria-labelledby="film-title">
+          <h3 id="film-title">Film</h3>
+          <p>{storyboard.title} · about {Math.round(storyboard.targetDurationSeconds / 60)} minutes</p>
+          <h4>Written voice</h4>
+          {storyboard.voiceProfile.traits.length ? <ul>{storyboard.voiceProfile.traits.map((trait) => <li key={trait.trait}><strong>{trait.trait}</strong>: {trait.description} <small>Based on {trait.evidenceItemIds.length} approved source{trait.evidenceItemIds.length === 1 ? '' : 's'}.</small></li>)}</ul> : <p>A restrained editorial voice will keep the story grounded.</p>}
+          <ol className="scene-list" aria-label="Film scenes">
+            {storyboard.scenes.map((scene, index) => <li key={scene.id} draggable
+              onDragStart={() => { draggedSceneId.current = scene.id; }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={() => {
+                const dragged = draggedSceneId.current;
+                if (!dragged || dragged === scene.id) return;
+                setStoryboard((current) => {
+                  if (!current) return current;
+                  const moving = current.scenes.find((entry) => entry.id === dragged);
+                  if (!moving) return current;
+                  const without = current.scenes.filter((entry) => entry.id !== dragged);
+                  without.splice(index, 0, moving);
+                  return {...current, scenes: without};
+                });
+              }}>
+              <span aria-label={`Drag scene ${index + 1}`}>↕ Scene {index + 1}</span>
+              <button type="button" disabled={index === 0} onClick={() => moveScene(scene.id, -1)} aria-label={`Move scene ${index + 1} earlier`}>Move earlier</button>
+              <button type="button" disabled={index === storyboard.scenes.length - 1} onClick={() => moveScene(scene.id, 1)} aria-label={`Move scene ${index + 1} later`}>Move later</button>
+              <label>Scene title<input value={scene.title} onChange={(event) => setStoryboard((current) => current && ({...current, scenes: current.scenes.map((entry) => entry.id === scene.id ? {...entry, title: event.target.value} : entry)}))} /></label>
+              <label>Narration<textarea value={scene.narrationText} onChange={(event) => setStoryboard((current) => current && ({...current, scenes: current.scenes.map((entry) => entry.id === scene.id ? {...entry, narrationText: event.target.value} : entry)}))} /></label>
+              <label>Caption<input value={scene.captionText} onChange={(event) => setStoryboard((current) => current && ({...current, scenes: current.scenes.map((entry) => entry.id === scene.id ? {...entry, captionText: event.target.value} : entry)}))} /></label>
+              <button type="button" onClick={() => saveScene(scene.id)}>Save scene</button>
+              <button type="button" onClick={() => regenerateScene(scene.id)}>Regenerate this scene</button>
+            </li>)}
+          </ol>
+          <button type="button" onClick={saveOrder}>Save scene order</button>
+        </section>}
       </section>
     </main>
   );

@@ -135,3 +135,74 @@ h1 {
     display: none;
   }
 }
+
+.project-form-page {
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 2rem clamp(1rem, 4vw, 4rem) 5rem;
+}
+
+.chapter-stepper ol {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.5rem;
+  padding: 0 0 1.5rem;
+  border-bottom: 1px solid rgb(40 35 29 / 25%);
+  list-style: none;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+
+.story-workflow {
+  margin-top: 4rem;
+  padding-top: 3rem;
+  border-top: 1px solid rgb(40 35 29 / 35%);
+}
+
+.workflow-actions,
+.record-card,
+.scene-list > li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.record-card,
+.scene-list > li {
+  margin: 1rem 0;
+  padding: 1.25rem;
+  border: 1px solid rgb(118 91 66 / 30%);
+  background: rgb(255 255 255 / 28%);
+}
+
+.record-card label,
+.scene-list label {
+  display: grid;
+  width: 100%;
+  gap: 0.35rem;
+}
+
+.scene-list textarea {
+  min-height: 6rem;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  min-height: 2.75rem;
+  padding: 0.6rem 0.9rem;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid var(--muted-gold);
+  outline-offset: 2px;
+}
