@@ -22,8 +22,8 @@ export class DefaultProviderExecutor implements ProviderExecutor {
     const heartbeat = setInterval(() => { void this.runs.heartbeat(claim).catch(() => controller.abort()); }, Math.max(1_000, Math.floor((claim.dispatchDeadlineAt.getTime() - Date.now()) / 2)));
     try {
       const dispatched = await input.dispatch({runId: claim.runId, providerIdempotencyKey: `provider-run-${claim.runId}`, signal: controller.signal});
-      if (!Number.isSafeInteger(dispatched.usage.actualCostMicros) || dispatched.usage.actualCostMicros < 0 || !Number.isSafeInteger(dispatched.usage.requestCount) || dispatched.usage.requestCount < 1) throw new Error('PROVIDER_USAGE_INVALID');
       try {
+        if (!dispatched.usage || !Number.isSafeInteger(dispatched.usage.actualCostMicros) || dispatched.usage.actualCostMicros < 0 || !Number.isSafeInteger(dispatched.usage.requestCount) || dispatched.usage.requestCount < 1) throw new Error('PROVIDER_USAGE_INVALID');
         await this.runs.completeWithResult(claim, dispatched.usage, (writer) => input.persistResult(writer, claim, dispatched.result));
       } catch (error) {
         await input.cleanupOrphanedResult?.(dispatched.result).catch(() => undefined);

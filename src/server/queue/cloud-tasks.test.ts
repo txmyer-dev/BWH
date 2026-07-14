@@ -30,13 +30,20 @@ describe('CloudTasksQueue', () => {
     const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
     const providerRunId = crypto.randomUUID();
     await queue.enqueue({type: 'execute_provider_run', projectId: crypto.randomUUID(), providerRunId});
-    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId: null, providerArtifactId: 'files/artifact-one'});
-    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId: null, providerArtifactId: 'files/artifact-two'});
+    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId: null, provider: 'google_gemini', providerArtifactId: 'files/artifact-one'});
+    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId: null, provider: 'google_gemini', providerArtifactId: 'files/artifact-two'});
     expect(createTask.mock.calls[0][0].task.name).toContain(providerRunId);
     expect(createTask.mock.calls[1][0].task.name).not.toContain('files/');
     expect(createTask.mock.calls[1][0].task.name).not.toContain('artifact-one');
     expect(createTask.mock.calls[0][0].task.name).not.toBe(createTask.mock.calls[1][0].task.name);
     expect(createTask.mock.calls[1][0].task.name).not.toBe(createTask.mock.calls[2][0].task.name);
+  });
+
+  it('uses provider plus artifact identifier as the safe cleanup identity domain', async () => {
+    const createTask = vi.fn().mockResolvedValue([{}]); const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
+    const base = {type: 'cleanup_provider_artifact' as const, projectId: crypto.randomUUID(), providerRunId: null, providerArtifactId: 'files/shared'};
+    await queue.enqueue({...base, provider: 'google_gemini'}); await queue.enqueue({...base, provider: 'another_provider'});
+    const names = createTask.mock.calls.map(([request]) => request.task.name); expect(new Set(names).size).toBe(2); expect(names.every((name) => !name.includes('files/') && !name.includes('shared'))).toBe(true);
   });
 });
 

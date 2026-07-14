@@ -21,7 +21,7 @@ export class CloudTasksQueue implements TaskQueue {
       ? `analysis-${task.jobId}`
       : task.type === 'execute_provider_run'
         ? `provider-${task.type}-${task.providerRunId}`
-        : `provider-${task.type}-${createHash('sha256').update(task.providerArtifactId).digest('hex').slice(0, 32)}`;
+        : `provider-${task.type}-${createHash('sha256').update(task.provider).update('\0').update(task.providerArtifactId).digest('hex').slice(0, 32)}`;
     try {
       await this.client.createTask({
         parent: this.config.queuePath,

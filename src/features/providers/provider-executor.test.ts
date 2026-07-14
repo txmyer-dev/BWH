@@ -91,6 +91,17 @@ describe('ProviderExecutor', () => {
     expect(cleanupOrphanedResult).toHaveBeenCalledWith({objectKey: 'staging/run.wav'});
   });
 
+  it.each([
+    ['missing', undefined],
+    ['negative', {actualCostMicros: -1, requestCount: 1}],
+    ['invalid', {actualCostMicros: Number.NaN, requestCount: 1}]
+  ])('cleans staged output exactly once for %s observed usage and leaves the run ambiguous', async (_name, usage) => {
+    const harness = await makeHarness(); const cleanupOrphanedResult = vi.fn().mockResolvedValue(undefined); const persistResult = vi.fn(); const staged = {objectKey: 'staging/invalid.wav'};
+    await expect(harness.executor.execute({projectId: harness.projectId, provider: 'deepgram', model: 'nova-3', operation: 'transcribe', dataCategories: ['source_audio'], canonicalInput: {audio: `invalid-${_name}`}, estimatedCostMicros: 100, pricingVersion: 'v1', dispatch: vi.fn().mockResolvedValue({result: staged, usage}), loadResult: vi.fn(), persistResult, cleanupOrphanedResult} as never)).rejects.toThrow('PROVIDER_USAGE_INVALID');
+    const [run] = await harness.runs.list(harness.projectId); expect(run.status).toBe('ambiguous'); expect(run.reservedCostMicros).toBe(100); expect(run.settledCostMicros).toBeNull();
+    expect(persistResult).not.toHaveBeenCalled(); expect(cleanupOrphanedResult).toHaveBeenCalledTimes(1); expect(cleanupOrphanedResult).toHaveBeenCalledWith(staged);
+  });
+
   it('rejects a replacement consent snapshot before provider I/O', async () => {
     const harness = await makeHarness(); const dispatch = vi.fn();
     const begin = harness.runs.beginDispatch.bind(harness.runs);

@@ -14,6 +14,7 @@ export interface CleanupProviderArtifactTask {
   type: 'cleanup_provider_artifact';
   projectId: string;
   providerRunId?: string | null;
+  provider: string;
   providerArtifactId: string;
 }
 
