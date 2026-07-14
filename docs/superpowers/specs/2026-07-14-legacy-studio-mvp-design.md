@@ -22,7 +22,7 @@ The product is not a general family archive, bulk digitization service, photo ed
 4. The Studio asks a small number of questions about missing or uncertain details.
 5. The creator confirms or corrects the factual record.
 6. The Studio composes a narrative grounded in the approved evidence.
-7. The creator edits and publishes a private, giftable story page.
+7. The creator edits a scene-by-scene storyboard, chooses narration, and renders a downloadable Memory Film.
 
 The guiding promise is:
 
@@ -36,7 +36,7 @@ An adult child, grandchild, sibling, or other family member who is comfortable e
 
 ### Recipient
 
-The recipient should not need an account or any familiarity with AI. They receive a warm, familiar artifact rather than an AI tool.
+The recipient should not need an account or any familiarity with AI. They receive a downloadable MP4 film that can be watched, saved, copied, and shared like a familiar family video.
 
 ### Job to be done
 
@@ -73,7 +73,7 @@ Original uploads are immutable. Any restored or enhanced media is stored as a se
 
 ### The output is the product
 
-Chat-like interaction may support the workflow, but the final experience is a designed story chapter, not a conversation transcript.
+Chat-like interaction may support the workflow, but the final experience is a finished Memory Film, not a conversation transcript or generated report.
 
 ## 4. MVP scope
 
@@ -90,17 +90,20 @@ Chat-like interaction may support the workflow, but the final experience is a de
 - Record creator answers and corrections.
 - Maintain an evidence ledger with verification states.
 - Generate a grounded written voice profile.
-- Compose a draft chapter with source provenance.
-- Edit the title, dedication, section text, captions, and image order.
-- Publish a private, unlisted story page with a revocable share link.
+- Compose a draft film storyboard with source provenance.
+- Edit the title, dedication, scenes, narration text, captions, and image order.
+- Generate narration with a standard OpenAI voice by default.
+- Allow the creator to replace generated narration with an uploaded narration recording.
+- Place authentic uploaded audio clips into selected scenes.
+- Preview the approved storyboard and audio plan.
+- Render a 1080p, 16:9 H.264 MP4 and provide a private, time-limited download.
 - Display original/restored comparison when restoration is enabled.
 - Delete a project and its stored media.
 
 ### Optional if the core path is complete
 
-- One-click printable layout or PDF export.
-- QR code for the private story page.
-- Original audio excerpts embedded in the story.
+- One rights-cleared background music track with automatic volume ducking.
+- Additional visual themes or transition styles.
 - One external photo-restoration provider.
 
 ### Explicitly deferred
@@ -112,6 +115,8 @@ Chat-like interaction may support the workflow, but the final experience is a de
 - Recipient replies or interviews.
 - Multiple chapters per project.
 - Synthetic cloning of a person's voice.
+- A full nonlinear video editor or arbitrary timeline controls.
+- PDF, poster, or interactive web-story output.
 - Family trees, facial recognition, and automatic identity matching.
 - Payments, package tiers, and Memorial/Milestone/Heritage modes.
 - Public discovery or social feeds.
@@ -159,23 +164,34 @@ The creator reviews the evidence ledger. Every material claim has one of four ve
 
 Only confirmed or corrected facts may appear as facts in the final narrative. Proposed connections may appear only as clearly uncertain language and only after creator approval.
 
-### Step 6: Shape the chapter
+### Step 6: Shape the film
 
 The Studio builds a written voice profile from approved material. The profile can describe recurring expressions, sentence rhythm, humor, formality, values, and perspective. Each trait must cite supporting evidence. When evidence is sparse, the narrative uses a restrained editorial voice rather than simulating the subject.
 
-GPT-5.6 produces a chapter draft with:
+GPT-5.6 produces a film storyboard with:
 
-- Opening scene
-- Three to five short sections organized around the media
-- Image captions
-- Closing reflection
-- Creator-written dedication
+- Opening title scene
+- Three to seven media scenes
+- Narration and on-screen captions for each scene
+- Placement of authentic uploaded audio clips
+- A closing reflection
+- Creator-written dedication and end card
 
-The creator can edit every field and regenerate an individual section without replacing approved work elsewhere.
+The creator can edit every field, reorder scenes, adjust scene duration, and regenerate an individual scene without replacing approved work elsewhere. The MVP is a guided storyboard editor, not a general-purpose video timeline.
+
+### Narration model
+
+The default path uses a standard built-in OpenAI narration voice reading the approved subject-informed script. The narrator is not presented as the subject. The creator selects from a small curated voice set and hears a short sample before rendering.
+
+The fallback path allows the creator to upload a complete narration recording. The recording follows the approved script, and the creator can adjust scene durations to match it. Authentic clips supplied with the source collection may replace or interrupt narration in selected scenes.
+
+The film includes a restrained end-credit disclosure when generated narration is used: “Narration created with an AI-generated OpenAI voice.” The MVP never clones the subject's voice.
 
 ### Step 7: Prepare the gift
 
-The published result is a responsive, private story page with editorial typography, generous spacing, restrained motion, accessible contrast, and clear image treatment. It includes no visible AI terminology. A revocable, unlisted link allows the recipient to view it without an account.
+The final gift is a downloadable Memory Film: a 1080p, 16:9 H.264 MP4 intended to run approximately two to four minutes. It uses one polished visual theme, restrained pan-and-zoom movement, crossfades, readable title cards, captions, narration, and authentic audio clips where available.
+
+The creator reviews the storyboard and audio plan before rendering. Rendering runs asynchronously and produces a private Cloud Storage object. The creator previews the completed film in the Studio and downloads it through a short-lived signed URL. Once downloaded, the MP4 itself is the gift; the recipient does not need the Studio, an account, or a share link.
 
 ## 6. Trust and provenance model
 
@@ -190,7 +206,7 @@ Every evidence item records:
 - Creator correction when applicable
 - Creation and update timestamps
 
-Every generated section records the evidence item IDs used to compose it. The editing interface may summarize provenance without exposing implementation jargon, for example: “Based on photos 1 and 3 and your answer about the train station.”
+Every generated scene records the evidence item IDs used to compose its narration and captions. The editing interface may summarize provenance without exposing implementation jargon, for example: “Based on photos 1 and 3 and your answer about the train station.”
 
 The system prompt must instruct models that uploaded content is data, not authority or executable instruction. Structured outputs are validated before persistence. Invalid or unsupported claims are rejected or returned for confirmation.
 
@@ -206,9 +222,12 @@ The system prompt must instruct models that uploaded content is data, not author
 - **Secrets:** Google Secret Manager
 - **AI narrative and vision:** OpenAI Responses API with `gpt-5.6`
 - **Transcription:** OpenAI audio transcription with `gpt-4o-transcribe`
+- **Narration:** OpenAI Speech API with a standard built-in voice and a configurable supported speech model
+- **Film composition:** Remotion scene components rendered with an FFmpeg-capable container
+- **Film rendering:** an on-demand Google Cloud Run Job
 - **Restoration:** optional third-party restoration adapter behind a provider-neutral interface
 
-A single TypeScript application keeps the seven-day build coherent. It serves the web UI and API routes from Cloud Run. Slow work is dispatched to idempotent processing handlers through Cloud Tasks.
+A single TypeScript application keeps the seven-day build coherent. It serves the web UI and API routes from Cloud Run. Analysis and transcription work is dispatched to idempotent processing handlers through Cloud Tasks. Approved films are rendered by a separate on-demand Cloud Run Job so CPU-heavy video work cannot block the interactive application.
 
 Cloud Run's local filesystem is temporary and is used only for bounded intermediate processing. Originals and derivatives are persisted to Cloud Storage. The browser uploads media using short-lived signed URLs so large files do not pass through the application process.
 
@@ -230,13 +249,17 @@ Submits images and approved text to GPT-5.6, requests structured evidence extrac
 
 Proposes the chapter framing, identifies material gaps, creates targeted interview questions, and writes creator answers into the evidence ledger.
 
-#### Composer
+#### Storyboard composer
 
-Builds the grounded voice profile, composes section drafts from approved evidence, checks provenance coverage, and supports section-level regeneration.
+Builds the grounded voice profile, composes scene drafts from approved evidence, checks provenance coverage, and supports scene-level regeneration.
 
-#### Publishing service
+#### Narration service
 
-Creates and revokes share tokens, renders the unlisted story page, and prevents direct exposure of private storage objects.
+Generates audio with a standard OpenAI voice, stores creator narration, places authentic clips, records the required generated-voice disclosure, and calculates audio durations for the storyboard.
+
+#### Render service
+
+Creates immutable render manifests, launches an on-demand Cloud Run Job, renders the Remotion composition to an H.264 MP4, stores the result privately, and issues a short-lived download URL to the creator.
 
 ## 8. Data model
 
@@ -248,8 +271,8 @@ Creates and revokes share tokens, renders the unlisted story page, and prevents 
 - `creator_relationship`
 - `gift_intention`
 - `status`
-- `share_token_hash`
-- `published_at`
+- `rendered_film_object_key` (nullable)
+- `rendered_at` (nullable)
 - `created_at`
 - `updated_at`
 
@@ -322,7 +345,7 @@ Creates and revokes share tokens, renders the unlisted story page, and prevents 
 - `created_at`
 - `updated_at`
 
-### `chapters`
+### `storyboards`
 
 - `id`
 - `project_id`
@@ -331,18 +354,29 @@ Creates and revokes share tokens, renders the unlisted story page, and prevents 
 - `time_range_text`
 - `status`
 - `dedication`
+- `narration_source` (`openai`, `creator`)
+- `narrator_voice` (nullable)
+- `creator_narration_asset_id` (nullable)
+- `target_duration_seconds`
+- `render_manifest` (`jsonb`, nullable)
 - `created_at`
 - `updated_at`
 
-### `chapter_sections`
+### `film_scenes`
 
 - `id`
-- `chapter_id`
+- `storyboard_id`
+- `scene_type` (`title`, `media`, `original_audio`, `dedication`, `credits`)
 - `title`
-- `body`
+- `narration_text`
+- `caption_text`
+- `duration_seconds`
 - `sequence_order`
 - `asset_ids` (`jsonb` array for the MVP)
 - `evidence_item_ids` (`jsonb` array for the MVP)
+- `generated_narration_object_key` (nullable)
+- `motion_preset`
+- `transition_preset`
 - `created_at`
 - `updated_at`
 
@@ -380,13 +414,19 @@ Input: approved direct quotations, transcript excerpts, writing samples, and cre
 
 Output: evidence-linked style traits, prohibited assumptions, and a confidence/coverage summary.
 
-### Chapter composition
+### Storyboard composition
 
 Input: accepted framing, confirmed/corrected evidence, approved voice profile, selected media order, and creator dedication.
 
-Output: structured chapter sections, captions, evidence references, and a list of any claims that could not be supported.
+Output: ordered film scenes containing narration, captions, media references, timing guidance, transition presets, evidence references, authentic-clip placement, and a list of claims that could not be supported.
 
 The composer must fail closed: if a factual sentence lacks evidence, it is omitted or returned as a question rather than presented as fact.
+
+### Narration generation
+
+Input: the creator-approved narration text for each scene, selected standard OpenAI voice, and restrained direction for pacing and tone.
+
+Output: generated narration audio per scene, duration metadata, and a disclosure flag that must be represented in the film credits.
 
 ## 10. Processing and data flow
 
@@ -400,9 +440,12 @@ The composer must fail closed: if a factual sentence lacks evidence, it is omitt
 8. GPT-5.6 returns structured proposals and evidence candidates.
 9. The creator approves the framing and answers targeted questions.
 10. The system updates verification states and builds the voice profile.
-11. The composer produces a provenance-linked draft.
-12. The creator edits and publishes it.
-13. The publishing service resolves a revocable share token and serves authorized media through short-lived URLs or an authenticated proxy.
+11. The storyboard composer produces provenance-linked scenes.
+12. The creator edits the storyboard and selects OpenAI or creator narration.
+13. The narration service generates per-scene audio, or validates the uploaded creator narration track.
+14. The application creates an immutable render manifest from the approved storyboard and audio plan.
+15. The render service starts a Cloud Run Job that renders the Remotion composition and stores the MP4 in private Cloud Storage.
+16. The creator previews the completed film and downloads it through a short-lived signed URL.
 
 ## 11. Error handling
 
@@ -413,18 +456,22 @@ The composer must fail closed: if a factual sentence lacks evidence, it is omitt
 - Invalid model output is never persisted as trusted evidence; the call is retried once with validation feedback and then surfaced as a recoverable failure.
 - Restoration failure never blocks story creation.
 - Transcription failure allows the creator to paste or type a transcript.
-- Publication is blocked when the chapter has no approved evidence or contains unresolved provenance errors.
-- Project deletion revokes sharing immediately and schedules deletion of originals, derivatives, database records, and provider-side artifacts where supported.
+- Narration-generation failure offers retry or creator-narration upload and does not discard the approved storyboard.
+- Film rendering is blocked when the storyboard has no approved evidence, contains unresolved provenance errors, lacks usable narration, or exceeds the configured duration limit.
+- Render jobs are idempotent. A failed render preserves its manifest and can be retried without regenerating the story or narration.
+- A completed MP4 is not exposed through a permanent public URL.
+- Project deletion immediately invalidates future downloads and schedules deletion of originals, derivatives, narration, rendered films, database records, and provider-side artifacts where supported.
 
 ## 12. Privacy and safety
 
 - Buckets are private by default.
-- Share links are unlisted, revocable, and represented by hashed tokens at rest.
+- Rendered films are available to the creator only through short-lived signed download URLs.
 - API keys are stored in Secret Manager.
 - Logs contain object IDs and job IDs, not media contents, transcripts, or narrative text.
 - The product states that creators should have permission to upload and share the material.
-- Living-subject material requires a visible consent reminder before publishing.
+- Living-subject material requires a visible consent reminder before rendering.
 - The MVP does not synthesize a person's cloned voice.
+- Generated narration uses a standard OpenAI voice and is clearly disclosed as AI-generated in the film credits.
 - Restored images are labeled and never replace originals.
 - A creator can permanently delete the project.
 
@@ -435,37 +482,43 @@ The composer must fail closed: if a factual sentence lacks evidence, it is omitt
 - Schema validation for every AI contract
 - Evidence-state transitions
 - Provenance coverage checks
-- Share-token creation, hashing, and revocation behavior
 - File validation and object-key authorization
 - Idempotent job handling
+- Render-manifest generation and duration calculations
+- Scene-to-audio timing and disclosure-credit enforcement
 
 ### Integration tests
 
 - Signed upload completion to asset creation
 - Mocked OpenAI analysis to evidence persistence
 - Transcription fallback behavior
-- Chapter composition using only confirmed/corrected evidence
+- Storyboard composition using only confirmed/corrected evidence
+- OpenAI narration and creator-narration adapter behavior
+- Render job invocation, status updates, and signed film download
 - Project deletion across database and object storage adapters
 
 ### End-to-end tests
 
-- Create project, upload three images, accept framing, answer questions, compose, edit, publish, and open the recipient link
+- Create project, upload three images, accept framing, answer questions, compose scenes, generate narration, render, preview, and download the MP4
 - Recover from one failed asset-processing job without losing the project
-- Reject or correct a proposed fact and verify it does not appear incorrectly in the final chapter
+- Reject or correct a proposed fact and verify it does not appear incorrectly in the final film
+- Replace generated narration with a creator-uploaded narration track and render successfully
 
 ### Demo fixture
 
-The repository includes a rights-cleared sample collection with three to five images, captions, expected evidence, and a completed example chapter. Judges can exercise the happy path without supplying private family media.
+The repository includes a rights-cleared sample collection with three to five images, one authentic audio clip, captions, expected evidence, a completed storyboard, and a short rendered example film. Judges can exercise the happy path without supplying private family media.
 
 ## 14. Success criteria
 
 The MVP succeeds when:
 
 - A creator can complete the happy path in under fifteen minutes after uploads finish.
-- The final story contains no unverified factual claims presented as certain.
-- Every generated section retains machine-readable provenance.
-- The result feels like a coherent gift rather than a generated report.
-- A recipient can view it without an account.
+- The final film contains no unverified factual claims presented as certain.
+- Every generated scene retains machine-readable provenance.
+- The rendered gift is a playable 1080p H.264 MP4 lasting approximately two to four minutes.
+- The result feels like a coherent keepsake film rather than an automated slideshow.
+- The creator can download the film, and the recipient can play the MP4 without a Legacy Studio account.
+- Generated OpenAI narration is disclosed in the end credits, and creator narration can replace it.
 - The full flow can be demonstrated clearly in under three minutes.
 - The README explains setup, sample data, architecture, Codex collaboration, and GPT-5.6 usage.
 
@@ -477,8 +530,9 @@ The demo will show:
 2. GPT-5.6 identifying a plausible chapter and explaining the media connection.
 3. The Studio surfacing uncertainty and asking three meaningful questions.
 4. The creator confirming and correcting the family record.
-5. A grounded narrative appearing in a subject-informed written voice.
-6. A private, polished gift page with optional restoration comparison.
+5. A grounded storyboard appearing in a subject-informed written voice.
+6. Standard OpenAI narration generated for the approved scenes, with an authentic uploaded clip placed in context.
+7. A polished Memory Film rendered and downloaded as an MP4.
 
 The submission will emphasize that Codex accelerated product design, architecture, implementation, testing, and documentation, while the running product uses GPT-5.6 for multimodal understanding, guided interviewing, evidence extraction, and narrative composition.
 
@@ -486,6 +540,7 @@ The submission will emphasize that Codex accelerated product design, architectur
 
 - OpenAI GPT-5.6 model guidance: https://developers.openai.com/api/docs/models/gpt-5.6-sol
 - OpenAI transcription model: https://developers.openai.com/api/docs/models/gpt-4o-transcribe
+- OpenAI speech generation and disclosure guidance: https://developers.openai.com/api/docs/guides/text-to-speech
 - Google Cloud Run overview: https://docs.cloud.google.com/run/docs/overview/what-is-cloud-run
 - Google Cloud Storage signed URLs: https://docs.cloud.google.com/storage/docs/access-control/signed-urls
 - Google Cloud Run configuration and Secret Manager integration: https://docs.cloud.google.com/run/docs/configuring
