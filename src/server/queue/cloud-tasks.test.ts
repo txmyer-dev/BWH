@@ -1,0 +1,44 @@
+import {describe, expect, it, vi} from 'vitest';
+
+import {CloudTasksQueue, verifyCloudTaskRequest} from './cloud-tasks';
+
+describe('CloudTasksQueue', () => {
+  it('creates an OIDC-authenticated task with a deterministic name', async () => {
+    const createTask = vi.fn().mockResolvedValue([{}]);
+    const queue = new CloudTasksQueue({createTask}, {
+      queuePath: 'projects/p/locations/us/queues/analysis',
+      targetUrl: 'https://service.example/api/internal/process-analysis',
+      audience: 'https://service.example', serviceAccountEmail: 'tasks@p.iam.gserviceaccount.com'
+    });
+    const task = {type: 'analyze_collection' as const, projectId: crypto.randomUUID(), jobId: crypto.randomUUID()};
+    await queue.enqueue(task);
+    expect(createTask).toHaveBeenCalledWith({parent: expect.any(String), task: expect.objectContaining({
+      name: expect.stringContaining(task.jobId), httpRequest: expect.objectContaining({
+        url: expect.any(String), oidcToken: {audience: 'https://service.example', serviceAccountEmail: 'tasks@p.iam.gserviceaccount.com'}
+      })
+    })});
+  });
+
+  it('treats a duplicate deterministic Cloud Task as already enqueued', async () => {
+    const createTask = vi.fn().mockRejectedValue({code: 6});
+    const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
+    await expect(queue.enqueue({type: 'analyze_collection', projectId: crypto.randomUUID(), jobId: crypto.randomUUID()})).resolves.toBeUndefined();
+  });
+});
+
+describe('verifyCloudTaskRequest', () => {
+  const config = {audience: 'https://service.example', serviceAccountEmail: 'tasks@p.iam.gserviceaccount.com'};
+  it('verifies the bearer token audience, issuer, and service account', async () => {
+    const verifyIdToken = vi.fn().mockResolvedValue({getPayload: () => ({aud: config.audience, iss: 'https://accounts.google.com', email: config.serviceAccountEmail, email_verified: true})});
+    const request = new Request('https://service.example/internal', {headers: {authorization: 'Bearer signed-token', 'x-cloudtasks-taskname': 'caller-controlled'}});
+    await expect(verifyCloudTaskRequest(request, {verifyIdToken}, config)).resolves.toBeUndefined();
+    expect(verifyIdToken).toHaveBeenCalledWith({idToken: 'signed-token', audience: config.audience});
+  });
+
+  it('rejects a task header without verified OIDC and rejects wrong identities', async () => {
+    const request = new Request('https://service.example/internal', {headers: {'x-cloudtasks-taskname': 'looks-real'}});
+    await expect(verifyCloudTaskRequest(request, {verifyIdToken: vi.fn()}, config)).rejects.toThrow('CLOUD_TASK_UNAUTHORIZED');
+    const wrong = {verifyIdToken: vi.fn().mockResolvedValue({getPayload: () => ({iss: 'https://evil.example', email: config.serviceAccountEmail, email_verified: true})})};
+    await expect(verifyCloudTaskRequest(new Request('https://service.example/internal', {headers: {authorization: 'Bearer token'}}), wrong, config)).rejects.toThrow('CLOUD_TASK_UNAUTHORIZED');
+  });
+});

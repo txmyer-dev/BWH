@@ -224,6 +224,19 @@
           "primaryKey": false,
           "notNull": true
         },
+        "original_claim": {
+          "name": "original_claim",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_asset_ids": {
+          "name": "source_asset_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "source_excerpt": {
           "name": "source_excerpt",
           "type": "text",
@@ -619,7 +632,30 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "processing_jobs_active_analysis_unique": {
+          "name": "processing_jobs_active_analysis_unique",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "job_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"processing_jobs\".\"status\" IN ('pending', 'processing')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "processing_jobs_project_id_projects_id_fk": {
           "name": "processing_jobs_project_id_projects_id_fk",

@@ -26,6 +26,8 @@ CREATE TABLE "evidence_items" (
 	"creator_answer_id" uuid,
 	"type" varchar(40) NOT NULL,
 	"claim" text NOT NULL,
+	"original_claim" text NOT NULL,
+	"source_asset_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"source_excerpt" text NOT NULL,
 	"confidence" real,
 	"verification_status" varchar(20) DEFAULT 'proposed' NOT NULL,
@@ -149,4 +151,5 @@ CREATE UNIQUE INDEX "assets_project_kind_sequence_unique" ON "assets" USING btre
 CREATE UNIQUE INDEX "assets_original_object_key_unique" ON "assets" USING btree ("original_object_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "storyboards_project_id_unique" ON "storyboards" USING btree ("project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "subjects_project_id_unique" ON "subjects" USING btree ("project_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "voice_profiles_project_id_unique" ON "voice_profiles" USING btree ("project_id");
+CREATE UNIQUE INDEX "voice_profiles_project_id_unique" ON "voice_profiles" USING btree ("project_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "processing_jobs_active_analysis_unique" ON "processing_jobs" USING btree ("project_id","job_type") WHERE "processing_jobs"."status" IN ('pending', 'processing');

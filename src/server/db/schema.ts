@@ -120,6 +120,8 @@ export const evidenceItems = pgTable('evidence_items', {
   ),
   type: varchar('type', {length: 40}).notNull(),
   claim: text('claim').notNull(),
+  originalClaim: text('original_claim').notNull(),
+  sourceAssetIds: jsonb('source_asset_ids').default([]).notNull(),
   sourceExcerpt: text('source_excerpt').notNull(),
   confidence: real('confidence'),
   verificationStatus: varchar('verification_status', {length: 20})
@@ -190,15 +192,21 @@ export const filmScenes = pgTable('film_scenes', {
   ...timestamps
 });
 
-export const processingJobs = pgTable('processing_jobs', {
-  id: uuid('id').primaryKey(),
-  projectId: uuid('project_id')
-    .notNull()
-    .references(() => projects.id, {onDelete: 'cascade'}),
-  assetId: uuid('asset_id').references(() => assets.id, {onDelete: 'cascade'}),
-  jobType: varchar('job_type', {length: 40}).notNull(),
-  status: varchar('status', {length: 30}).default('pending').notNull(),
-  attemptCount: integer('attempt_count').default(0).notNull(),
-  lastError: text('last_error'),
-  ...timestamps
-});
+export const processingJobs = pgTable(
+  'processing_jobs',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+    assetId: uuid('asset_id').references(() => assets.id, {onDelete: 'cascade'}),
+    jobType: varchar('job_type', {length: 40}).notNull(),
+    status: varchar('status', {length: 30}).default('pending').notNull(),
+    attemptCount: integer('attempt_count').default(0).notNull(),
+    lastError: text('last_error'),
+    ...timestamps
+  },
+  (table) => [
+    uniqueIndex('processing_jobs_active_analysis_unique')
+      .on(table.projectId, table.jobType)
+      .where(sql`${table.status} IN ('pending', 'processing')`)
+  ]
+);
