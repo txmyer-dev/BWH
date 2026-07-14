@@ -12,13 +12,30 @@ export const consentProviderSchema = z.union([
   processingProviderSchema
 ]);
 
-export const acceptConsentSchema = z.object({
-  purpose: consentPurposeSchema,
+const consentDocumentFields = {
   documentVersion: z.string().trim().min(1).max(80),
-  providers: z.array(consentProviderSchema).min(1),
-  dataCategories: z.array(z.string().trim().min(1).max(80)).min(1),
   permissionConfirmed: z.boolean()
-}).strict();
+};
+
+const dataCategoriesSchema = z.array(z.string().trim().min(1).max(80)).min(1);
+
+export const acceptConsentSchema = z.discriminatedUnion('purpose', [
+  z.object({
+    purpose: z.literal('storage'),
+    ...consentDocumentFields,
+    providers: z.array(z.literal('google_cloud_storage')).min(1),
+    dataCategories: dataCategoriesSchema.refine(
+      (categories) => categories.includes('original_media'),
+      {message: 'STORAGE_CONSENT_REQUIRED'}
+    )
+  }).strict(),
+  z.object({
+    purpose: z.literal('processing'),
+    ...consentDocumentFields,
+    providers: z.array(processingProviderSchema).min(1),
+    dataCategories: dataCategoriesSchema
+  }).strict()
+]);
 
 export type ConsentPurpose = z.infer<typeof consentPurposeSchema>;
 export type ProcessingProvider = z.infer<typeof processingProviderSchema>;

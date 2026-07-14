@@ -51,7 +51,11 @@ export class ConsentService {
 
   async assertStorageConsent(projectId: string) {
     const consent = await this.repository.findValid(projectId, 'storage');
-    if (!consent || !consent.providers.includes('google_cloud_storage')) {
+    if (
+      !consent ||
+      !consent.providers.includes('google_cloud_storage') ||
+      !consent.dataCategories.includes('original_media')
+    ) {
       throw new Error('STORAGE_CONSENT_REQUIRED');
     }
     return consent;

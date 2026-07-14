@@ -44,6 +44,21 @@ describe('ConsentService', () => {
     })).rejects.toThrow('PERMISSION_CONFIRMATION_REQUIRED');
   });
 
+  it('rejects storage consent that does not approve original media', async () => {
+    const {service} = setup();
+    await expect(service.accept({
+      projectId,
+      purpose: 'storage',
+      documentVersion: '2026-07-14.1',
+      providers: ['google_cloud_storage'],
+      dataCategories: ['derived_media'],
+      permissionConfirmed: true
+    })).rejects.toThrow('STORAGE_CONSENT_REQUIRED');
+    await expect(service.assertStorageConsent(projectId)).rejects.toThrow(
+      'STORAGE_CONSENT_REQUIRED'
+    );
+  });
+
   it('authorizes the project owner before accepting a snapshot', async () => {
     const authorize = vi.fn(async () => { throw new Error('PROJECT_FORBIDDEN'); });
     const {service} = setup(authorize);

@@ -1,4 +1,4 @@
-import {and, desc, eq, isNull} from 'drizzle-orm';
+import {and, desc, eq, isNull, sql} from 'drizzle-orm';
 
 import type {Database} from '../../server/db/client';
 import {projectConsents} from '../../server/db/schema';
@@ -67,6 +67,9 @@ export class PostgresConsentRepository implements ConsentRepository {
 
   async accept(input: StoredConsent) {
     return this.database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${input.projectId}), hashtext(${input.purpose}))`
+      );
       await transaction
         .update(projectConsents)
         .set({invalidatedAt: input.acceptedAt})

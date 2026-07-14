@@ -72,7 +72,10 @@ export const projectConsents = pgTable(
     check(
       'project_consents_permission_confirmed_check',
       sql`${table.permissionConfirmed} = true`
-    )
+    ),
+    uniqueIndex('project_consents_valid_project_purpose_unique')
+      .on(table.projectId, table.purpose)
+      .where(sql`${table.invalidatedAt} IS NULL`)
   ]
 );
 

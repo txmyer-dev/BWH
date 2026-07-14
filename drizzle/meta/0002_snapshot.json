@@ -773,7 +773,30 @@
           "notNull": true
         }
       },
-      "indexes": {},
+      "indexes": {
+        "project_consents_valid_project_purpose_unique": {
+          "name": "project_consents_valid_project_purpose_unique",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "purpose",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"project_consents\".\"invalidated_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "project_consents_project_id_projects_id_fk": {
           "name": "project_consents_project_id_projects_id_fk",

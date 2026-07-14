@@ -8,6 +8,8 @@ import {
   type UploadFile
 } from './asset-service';
 import {MemoryStorage} from './memory-storage';
+import {ConsentService} from '../consent/consent-service';
+import {InMemoryConsentRepository} from '../consent/consent-repository';
 
 const IMAGE_BYTES = 25 * 1024 * 1024;
 const AUDIO_BYTES = 100 * 1024 * 1024;
@@ -71,6 +73,34 @@ describe('AssetService upload policy', () => {
       image()
     )).rejects.toThrow('STORAGE_CONSENT_REQUIRED');
     expect(await context.repository.listByProject(context.project.projectId)).toEqual([]);
+    expect(storage.signedRequests).toEqual([]);
+  });
+
+  it('does not let unrelated storage categories unlock a signed upload', async () => {
+    const consent = new ConsentService(
+      new InMemoryConsentRepository(),
+      async () => undefined
+    );
+    const storage = new MemoryStorage();
+    const context = await setup(
+      undefined,
+      storage,
+      (id) => consent.assertStorageConsent(id)
+    );
+
+    await expect(consent.accept({
+      projectId: context.project.projectId,
+      purpose: 'storage',
+      documentVersion: '2026-07-14.1',
+      providers: ['google_cloud_storage'],
+      dataCategories: ['derived_media'],
+      permissionConfirmed: true
+    })).rejects.toThrow('STORAGE_CONSENT_REQUIRED');
+    await expect(context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      image()
+    )).rejects.toThrow('STORAGE_CONSENT_REQUIRED');
     expect(storage.signedRequests).toEqual([]);
   });
 

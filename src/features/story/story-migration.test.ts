@@ -20,6 +20,9 @@ describe('storyboard revision migration history', () => {
     expect(consent).toContain('CREATE TABLE "project_consents"');
     expect(consent).toContain('"project_id" uuid NOT NULL');
     expect(consent).toContain('FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade');
+    expect(consent).toContain(
+      'CREATE UNIQUE INDEX "project_consents_valid_project_purpose_unique" ON "project_consents" USING btree ("project_id","purpose") WHERE "project_consents"."invalidated_at" IS NULL;'
+    );
     expect(consent).not.toMatch(/DROP TABLE|TRUNCATE|DELETE FROM|UPDATE "projects"/);
   });
 
