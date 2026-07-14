@@ -1,0 +1,52 @@
+import {Storage} from '@google-cloud/storage';
+
+import type {MediaStorage} from './storage';
+
+export class GcsMediaStorage implements MediaStorage {
+  private readonly bucket;
+
+  constructor(bucketName: string, storage = new Storage()) {
+    this.bucket = storage.bucket(bucketName);
+  }
+
+  async createUploadUrl(input: {
+    objectKey: string;
+    contentType: string;
+    expiresInMs: number;
+  }) {
+    const [url] = await this.bucket.file(input.objectKey).getSignedUrl({
+      version: 'v4',
+      action: 'write',
+      expires: Date.now() + input.expiresInMs,
+      contentType: input.contentType
+    });
+    return url;
+  }
+
+  async createDownloadUrl(input: {objectKey: string; expiresInMs: number}) {
+    const [url] = await this.bucket.file(input.objectKey).getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + input.expiresInMs
+    });
+    return url;
+  }
+
+  async stat(objectKey: string) {
+    const [metadata] = await this.bucket.file(objectKey).getMetadata();
+    const size = Number(metadata.size);
+    const contentType = metadata.contentType;
+    if (!Number.isSafeInteger(size) || !contentType) {
+      throw new Error('INVALID_OBJECT_METADATA');
+    }
+    return {size, contentType};
+  }
+
+  async deleteMany(objectKeys: string[]) {
+    await Promise.all(
+      objectKeys.map((objectKey) =>
+        this.bucket.file(objectKey).delete({ignoreNotFound: true})
+      )
+    );
+  }
+}
