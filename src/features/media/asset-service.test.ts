@@ -1,4 +1,4 @@
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 
 import {InMemoryProjectRepository} from '../projects/project-repository';
 import {ProjectService} from '../projects/project-service';
@@ -22,7 +22,8 @@ const image = (overrides: Partial<UploadFile> = {}): UploadFile => ({
 
 const setup = async (
   now: () => Date = () => new Date('2026-07-14T12:00:00Z'),
-  storage = new MemoryStorage()
+  storage = new MemoryStorage(),
+  assertStorageConsent: (projectId: string) => Promise<unknown> = async () => ({})
 ) => {
   const projectService = new ProjectService(new InMemoryProjectRepository());
   const project = await projectService.createProject({
@@ -32,7 +33,13 @@ const setup = async (
     creatorRelationship: 'son'
   });
   const repository = new InMemoryAssetRepository();
-  const service = new AssetService(repository, storage, projectService, now);
+  const service = new AssetService(
+    repository,
+    storage,
+    projectService,
+    assertStorageConsent,
+    now
+  );
   return {project, repository, service, storage};
 };
 
@@ -50,6 +57,33 @@ const uploadAndComplete = async (
 };
 
 describe('AssetService upload policy', () => {
+  it('does not reserve or sign an upload before storage consent', async () => {
+    const storage = new MemoryStorage();
+    const context = await setup(
+      undefined,
+      storage,
+      async () => { throw new Error('STORAGE_CONSENT_REQUIRED'); }
+    );
+
+    await expect(context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      image()
+    )).rejects.toThrow('STORAGE_CONSENT_REQUIRED');
+    expect(await context.repository.listByProject(context.project.projectId)).toEqual([]);
+    expect(storage.signedRequests).toEqual([]);
+  });
+
+  it('authorizes before checking storage consent', async () => {
+    const consent = vi.fn(async () => { throw new Error('STORAGE_CONSENT_REQUIRED'); });
+    const context = await setup(undefined, undefined, consent);
+    await expect(context.service.requestUpload(
+      context.project.projectId,
+      '0'.repeat(64),
+      image()
+    )).rejects.toThrow('PROJECT_FORBIDDEN');
+    expect(consent).not.toHaveBeenCalled();
+  });
   it('requires three ready images before analysis', async () => {
     const context = await setup();
 

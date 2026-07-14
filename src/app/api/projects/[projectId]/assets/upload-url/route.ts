@@ -6,6 +6,8 @@ import {
   PostgresAssetRepository,
   type UploadFile
 } from '@/features/media/asset-service';
+import {PostgresConsentRepository} from '@/features/consent/consent-repository';
+import {ConsentService} from '@/features/consent/consent-service';
 import {GcsMediaStorage} from '@/features/media/gcs-storage';
 import {PostgresProjectRepository} from '@/features/projects/project-repository';
 import {ProjectService} from '@/features/projects/project-service';
@@ -20,13 +22,18 @@ const services = () => {
   const projectService = new ProjectService(
     new PostgresProjectRepository(database)
   );
+  const consentService = new ConsentService(
+    new PostgresConsentRepository(database),
+    async () => undefined
+  );
   return {
     projectService,
     assetRepository,
     assetService: new AssetService(
       assetRepository,
       new GcsMediaStorage(parseEnv(process.env).GCS_BUCKET),
-      projectService
+      projectService,
+      (projectId) => consentService.assertStorageConsent(projectId)
     )
   };
 };
@@ -36,7 +43,13 @@ const ownerToken = async (projectId: string) =>
 
 const errorResponse = (error: unknown) => {
   const code = error instanceof Error ? error.message : 'UPLOAD_FAILED';
-  const status = code === 'PROJECT_FORBIDDEN' ? 403 : code === 'ASSET_NOT_FOUND' ? 404 : 400;
+  const status = code === 'PROJECT_FORBIDDEN'
+    ? 403
+    : code === 'ASSET_NOT_FOUND'
+      ? 404
+      : code === 'STORAGE_CONSENT_REQUIRED'
+        ? 409
+        : 400;
   return NextResponse.json({error: code}, {status});
 };
 

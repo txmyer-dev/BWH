@@ -1,4 +1,5 @@
 import {
+  boolean,
   check,
   integer,
   jsonb,
@@ -45,6 +46,34 @@ export const subjects = pgTable(
     ...timestamps
   },
   (table) => [uniqueIndex('subjects_project_id_unique').on(table.projectId)]
+);
+
+export const projectConsents = pgTable(
+  'project_consents',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'cascade'}),
+    purpose: varchar('purpose', {length: 20}).notNull(),
+    documentVersion: varchar('document_version', {length: 80}).notNull(),
+    providers: jsonb('providers').notNull(),
+    dataCategories: jsonb('data_categories').notNull(),
+    permissionConfirmed: boolean('permission_confirmed').notNull(),
+    acceptedAt: timestamp('accepted_at', {withTimezone: true}).notNull(),
+    invalidatedAt: timestamp('invalidated_at', {withTimezone: true}),
+    snapshotHash: varchar('snapshot_hash', {length: 64}).notNull()
+  },
+  (table) => [
+    check(
+      'project_consents_purpose_check',
+      sql`${table.purpose} IN ('storage', 'processing')`
+    ),
+    check(
+      'project_consents_permission_confirmed_check',
+      sql`${table.permissionConfirmed} = true`
+    )
+  ]
 );
 
 export const assets = pgTable(

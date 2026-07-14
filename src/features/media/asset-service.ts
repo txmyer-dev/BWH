@@ -451,11 +451,13 @@ export class AssetService {
     private readonly repository: AssetRepository,
     private readonly storage: MediaStorage,
     private readonly projects: Pick<ProjectService, 'assertProjectOwner'>,
+    private readonly assertStorageConsent: (projectId: string) => Promise<unknown>,
     private readonly now: () => Date = () => new Date()
   ) {}
 
   async requestUpload(projectId: string, ownerToken: string, file: UploadFile) {
     await this.projects.assertProjectOwner(projectId, ownerToken);
+    await this.assertStorageConsent(projectId);
     const validatedFile = parseUploadFile(file);
     validateFile(validatedFile);
     const now = this.now();

@@ -76,6 +76,8 @@ export default function ProjectPage({
     createWaitingUploadStatus
   );
   const [message, setMessage] = useState('Add at least three photographs.');
+  const [storagePermission, setStoragePermission] = useState(false);
+  const [processingPermission, setProcessingPermission] = useState(false);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [availableAssets, setAvailableAssets] = useState<StoryboardAssetOptionSource[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -407,6 +409,39 @@ export default function ProjectPage({
 
   const sourceOptions = buildStoryboardOptions(projectId, availableAssets, evidence);
 
+  const saveConsent = async (
+    purpose: 'storage' | 'processing',
+    permissionConfirmed: boolean
+  ) => {
+    if (!permissionConfirmed) {
+      setMessage('Please confirm that you have permission before saving.');
+      return;
+    }
+    const storage = purpose === 'storage';
+    const response = await fetch(`/api/projects/${projectId}/consent`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        purpose,
+        documentVersion: '2026-07-14.1',
+        providers: storage
+          ? ['google_cloud_storage']
+          : ['google_gemini', 'deepgram', 'openai'],
+        dataCategories: storage
+          ? ['original_media', 'derived_media']
+          : [
+              'selected_photos', 'captions', 'written_artifacts', 'transcripts',
+              'approved_story_context', 'source_audio', 'approved_narration_text',
+              'source_references'
+            ],
+        permissionConfirmed
+      })
+    });
+    setMessage(response.ok
+      ? `${storage ? 'Storage' : 'Processing'} choices saved. Nothing starts automatically.`
+      : `The ${storage ? 'storage' : 'processing'} choices could not be saved.`);
+  };
+
   return (
     <main className="project-form-page">
       <nav aria-label="Chapter progress" className="chapter-stepper">
@@ -418,6 +453,41 @@ export default function ProjectPage({
         <p className="dek">
           Choose three to seven family photographs, then add what you know.
         </p>
+        <section aria-labelledby="storage-consent-title" className="record-card">
+          <h2 id="storage-consent-title">Keep your family pieces private</h2>
+          <p>
+            Private originals and derivatives are stored in Google Cloud Storage.
+            This is storage only; it is separate from the Gemini Developer API.
+          </p>
+          <p>
+            Data stored: original photographs, recordings, written artifacts, and
+            private derived media.
+          </p>
+          <p><a href="https://cloud.google.com/terms/cloud-privacy-notice" target="_blank" rel="noreferrer">Google Cloud privacy information</a></p>
+          <label>
+            <input type="checkbox" checked={storagePermission} onChange={(event) => setStoragePermission(event.target.checked)} />
+            I have permission to upload and store this material.
+          </label>
+          <button type="button" onClick={() => saveConsent('storage', storagePermission)}>Save storage choice</button>
+        </section>
+        <section aria-labelledby="processing-consent-title" className="record-card">
+          <h2 id="processing-consent-title">Choose external processing</h2>
+          <p>
+            This project sends selected information to third-party processors. By
+            continuing, you confirm that you have permission to submit this material.
+          </p>
+          <ul>
+            <li><strong>Google Gemini Developer API:</strong> selected photos, captions, written artifacts, transcripts, and approved story context for analysis and story composition. Gemini has no regional data-residency promise. <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noreferrer">Privacy and terms</a></li>
+            <li><strong>Deepgram:</strong> uploaded audio for transcription; approved narration text and the Arcas voice setting for narration. <a href="https://deepgram.com/privacy" target="_blank" rel="noreferrer">Privacy information</a></li>
+            <li><strong>OpenAI:</strong> only the approved evidence ledger, source references, and final narration text for factuality review. <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noreferrer">Privacy information</a></li>
+            <li><strong>Microsoft Azure (optional, not currently selected):</strong> only approved narration text and voice settings after you explicitly select Azure. <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noreferrer">Privacy information</a></li>
+          </ul>
+          <label>
+            <input type="checkbox" checked={processingPermission} onChange={(event) => setProcessingPermission(event.target.checked)} />
+            I have permission to submit this material to the listed processors.
+          </label>
+          <button type="button" onClick={() => saveConsent('processing', processingPermission)}>Save processing choice</button>
+        </section>
         <form onSubmit={gather}>
           <label>
             Family photographs (3–7)
