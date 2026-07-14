@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/legacy_studio
+      GCS_BUCKET: legacy-studio-local
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-local-development-key}
+      GCP_PROJECT_ID: legacy-studio-local
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: legacy_studio
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d legacy_studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:

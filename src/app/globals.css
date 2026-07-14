@@ -1,0 +1,137 @@
+:root {
+  --cream: #f4efe3;
+  --ink: #28231d;
+  --sepia: #765b42;
+  --muted-gold: #aa8a4e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--cream);
+  color: var(--ink);
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+a {
+  color: inherit;
+}
+
+.landing {
+  min-height: 100vh;
+  padding: 2rem clamp(1.5rem, 5vw, 5rem) 3rem;
+  background:
+    linear-gradient(90deg, rgb(118 91 66 / 7%) 1px, transparent 1px) 50% 0 / min(22vw, 18rem) 100%,
+    var(--cream);
+}
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid rgb(40 35 29 / 35%);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.wordmark {
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.edition {
+  color: var(--sepia);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+
+.hero {
+  display: grid;
+  align-content: center;
+  max-width: 62rem;
+  min-height: 72vh;
+  padding: 5rem 0;
+}
+
+.eyebrow {
+  margin: 0 0 1.5rem;
+  color: var(--muted-gold);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+h1 {
+  max-width: 18ch;
+  margin: 0;
+  font-size: clamp(3rem, 7vw, 6.5rem);
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+}
+
+.dek {
+  max-width: 42rem;
+  margin: 2rem 0;
+  color: var(--sepia);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: clamp(1rem, 2vw, 1.2rem);
+  line-height: 1.7;
+}
+
+.cta {
+  width: fit-content;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--muted-gold);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.process {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr auto;
+  gap: 1.25rem;
+  align-items: center;
+  padding-top: 1.5rem;
+  border-top: 1px solid rgb(40 35 29 / 35%);
+  color: var(--sepia);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.process span {
+  height: 1px;
+  background: rgb(170 138 78 / 55%);
+}
+
+@media (max-width: 40rem) {
+  .edition {
+    display: none;
+  }
+
+  .process {
+    grid-template-columns: 1fr;
+  }
+
+  .process span {
+    display: none;
+  }
+}

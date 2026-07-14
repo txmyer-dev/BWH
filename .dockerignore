@@ -1,0 +1,6 @@
+.git
+.next
+.superpowers
+node_modules
+npm-debug.log*
+tsconfig.tsbuildinfo
