@@ -1,4 +1,4 @@
-import type {AnalysisTask, TaskQueue} from './task-queue';
+import type {QueuedTask, TaskQueue} from './task-queue';
 
 interface CloudTasksClientLike {
   createTask(request: {parent: string; task: {name: string; httpRequest: {httpMethod: 'POST'; url: string; headers: Record<string, string>; body: string; oidcToken: {serviceAccountEmail: string; audience: string}}}}): Promise<unknown>;
@@ -14,12 +14,15 @@ export interface CloudTasksConfig {
 export class CloudTasksQueue implements TaskQueue {
   constructor(private readonly client: CloudTasksClientLike, private readonly config: CloudTasksConfig) {}
 
-  async enqueue(task: AnalysisTask) {
+  async enqueue(task: QueuedTask) {
+    const taskName = task.type === 'analyze_collection'
+      ? `analysis-${task.jobId}`
+      : `provider-${task.type}-${task.providerRunId}${task.type === 'cleanup_provider_artifact' ? `-${task.providerArtifactId}` : ''}`;
     try {
       await this.client.createTask({
         parent: this.config.queuePath,
         task: {
-          name: `${this.config.queuePath}/tasks/analysis-${task.jobId}`,
+          name: `${this.config.queuePath}/tasks/${taskName}`,
           httpRequest: {
             httpMethod: 'POST', url: this.config.targetUrl,
             headers: {'Content-Type': 'application/json'},

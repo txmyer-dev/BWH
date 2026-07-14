@@ -24,6 +24,19 @@ describe('CloudTasksQueue', () => {
     const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
     await expect(queue.enqueue({type: 'analyze_collection', projectId: crypto.randomUUID(), jobId: crypto.randomUUID()})).resolves.toBeUndefined();
   });
+
+  it('uses providerRunId for deterministic provider task names', async () => {
+    const createTask = vi.fn().mockResolvedValue([{}]);
+    const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
+    const providerRunId = crypto.randomUUID();
+    await queue.enqueue({type: 'execute_provider_run', projectId: crypto.randomUUID(), providerRunId});
+    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId, providerArtifactId: 'artifact-one'});
+    await queue.enqueue({type: 'cleanup_provider_artifact', projectId: crypto.randomUUID(), providerRunId, providerArtifactId: 'artifact-two'});
+    expect(createTask.mock.calls[0][0].task.name).toContain(providerRunId);
+    expect(createTask.mock.calls[1][0].task.name).toContain(providerRunId);
+    expect(createTask.mock.calls[0][0].task.name).not.toBe(createTask.mock.calls[1][0].task.name);
+    expect(createTask.mock.calls[1][0].task.name).not.toBe(createTask.mock.calls[2][0].task.name);
+  });
 });
 
 describe('verifyCloudTaskRequest', () => {

@@ -4,6 +4,21 @@ export interface AnalysisTask {
   jobId: string;
 }
 
+export interface ExecuteProviderRunTask {
+  type: 'execute_provider_run';
+  projectId: string;
+  providerRunId: string;
+}
+
+export interface CleanupProviderArtifactTask {
+  type: 'cleanup_provider_artifact';
+  projectId: string;
+  providerRunId: string;
+  providerArtifactId: string;
+}
+
+export type QueuedTask = AnalysisTask | ExecuteProviderRunTask | CleanupProviderArtifactTask;
+
 export interface TaskQueue {
-  enqueue(task: AnalysisTask): Promise<void>;
+  enqueue(task: QueuedTask): Promise<void>;
 }

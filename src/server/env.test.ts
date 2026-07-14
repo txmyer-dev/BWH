@@ -13,8 +13,16 @@ describe('parseEnv', () => {
   it('applies deployment defaults', () => {
     expect(parseEnv(requiredEnv)).toMatchObject({
       GCP_LOCATION: 'us-central1',
-      RENDER_JOB_NAME: 'legacy-studio-render'
+      RENDER_JOB_NAME: 'legacy-studio-render',
+      PROVIDER_RUN_LEASE_MS: 60_000,
+      PROVIDER_DEFAULT_BUDGET_MICROS: 5_000_000,
+      PROVIDER_DEFAULT_REQUEST_BUDGET: 100
     });
+  });
+
+  it('requires a production fingerprint secret and validates positive control-plane values', () => {
+    expect(() => parseEnv({...requiredEnv, NODE_ENV: 'production'})).toThrow('PROVIDER_FINGERPRINT_SECRET');
+    expect(() => parseEnv({...requiredEnv, PROVIDER_RUN_LEASE_MS: '0'})).toThrow();
   });
 
   it('rejects missing required configuration', () => {

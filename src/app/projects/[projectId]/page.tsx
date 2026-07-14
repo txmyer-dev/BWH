@@ -36,6 +36,8 @@ type ImageDraft = {
   reservationId?: string;
 };
 
+type ProviderRunSummary = {id: string; operation: string; provider: string; status: string; cacheHitCount: number; requestCount: number; estimatedCostMicros: number};
+
 const putWithProgress = (
   url: string,
   body: Blob,
@@ -82,6 +84,7 @@ export default function ProjectPage({
   const [availableAssets, setAvailableAssets] = useState<StoryboardAssetOptionSource[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [storyboard, setStoryboard] = useState<Storyboard | null>(null);
+  const [providerRuns, setProviderRuns] = useState<ProviderRunSummary[]>([]);
   const storyboardRef = useRef<Storyboard | null>(null);
   const [corrections, setCorrections] = useState<Record<string, string>>({});
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -99,6 +102,11 @@ export default function ProjectPage({
     []
   );
   useEffect(() => { storyboardRef.current = storyboard; }, [storyboard]);
+  useEffect(() => {
+    void fetch(`/api/projects/${projectId}/provider-runs`).then(async (response) => {
+      if (response.ok) setProviderRuns(await response.json());
+    }).catch(() => undefined);
+  }, [projectId]);
 
   const chooseImages = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []).slice(0, 7);
@@ -684,6 +692,15 @@ export default function ProjectPage({
           </ol>
           <button type="button" onClick={saveOrder}>Save scene order</button>
         </section>}
+      </section>
+      <section aria-labelledby="provider-activity-title" className="record-card">
+        <h2 id="provider-activity-title">External processing activity</h2>
+        <p>Estimate, not final billing.</p>
+        {providerRuns.length === 0 ? <p>No external processing has been requested.</p> : <ul>
+          {providerRuns.map((run) => <li key={run.id}>
+            <strong>{run.operation.replaceAll('_', ' ')}</strong> · {run.provider} · {run.status} · cache reuse {run.cacheHitCount} · requests {run.requestCount} · estimated ${(run.estimatedCostMicros / 1_000_000).toFixed(4)}
+          </li>)}
+        </ul>}
       </section>
     </main>
   );

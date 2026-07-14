@@ -3,6 +3,8 @@ import {
   check,
   integer,
   jsonb,
+  bigint,
+  index,
   pgTable,
   real,
   text,
@@ -246,3 +248,68 @@ export const processingJobs = pgTable(
       .where(sql`${table.status} IN ('pending', 'processing')`)
   ]
 );
+
+export const projectProviderBudgets = pgTable('project_provider_budgets', {
+  projectId: uuid('project_id').primaryKey().references(() => projects.id, {onDelete: 'cascade'}),
+  limitMicros: bigint('limit_micros', {mode: 'number'}).notNull(),
+  reservedMicros: bigint('reserved_micros', {mode: 'number'}).default(0).notNull(),
+  settledMicros: bigint('settled_micros', {mode: 'number'}).default(0).notNull(),
+  requestLimit: integer('request_limit').notNull(),
+  reservedRequests: integer('reserved_requests').default(0).notNull(),
+  settledRequests: integer('settled_requests').default(0).notNull(),
+  pricingVersion: varchar('pricing_version', {length: 40}).notNull(),
+  ...timestamps
+}, (table) => [
+  check('project_provider_budgets_nonnegative_check', sql`${table.limitMicros} >= 0 AND ${table.reservedMicros} >= 0 AND ${table.settledMicros} >= 0`),
+  check('project_provider_request_budgets_nonnegative_check', sql`${table.requestLimit} >= 0 AND ${table.reservedRequests} >= 0 AND ${table.settledRequests} >= 0`),
+  check('project_provider_request_budgets_limit_check', sql`${table.reservedRequests} + ${table.settledRequests} <= ${table.requestLimit}`),
+  check('project_provider_budgets_limit_check', sql`${table.reservedMicros} + ${table.settledMicros} <= ${table.limitMicros}`)
+]);
+
+export const providerRuns = pgTable('provider_runs', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  consentId: uuid('consent_id').notNull().references(() => projectConsents.id, {onDelete: 'restrict'}),
+  provider: varchar('provider', {length: 80}).notNull(),
+  model: varchar('model', {length: 120}).notNull(),
+  operation: varchar('operation', {length: 40}).notNull(),
+  inputFingerprint: varchar('input_fingerprint', {length: 64}).notNull(),
+  status: varchar('status', {length: 30}).notNull(),
+  estimatedCostMicros: bigint('estimated_cost_micros', {mode: 'number'}).notNull(),
+  reservedCostMicros: bigint('reserved_cost_micros', {mode: 'number'}).notNull(),
+  settledCostMicros: bigint('settled_cost_micros', {mode: 'number'}),
+  pricingVersion: varchar('pricing_version', {length: 40}).notNull(),
+  requestCount: integer('request_count').default(0).notNull(),
+  cacheHitCount: integer('cache_hit_count').default(0).notNull(),
+  leaseToken: uuid('lease_token'),
+  leaseExpiresAt: timestamp('lease_expires_at', {withTimezone: true}),
+  dispatchDeadlineAt: timestamp('dispatch_deadline_at', {withTimezone: true}),
+  providerIdempotencyKey: varchar('provider_idempotency_key', {length: 120}).notNull(),
+  retryOfRunId: uuid('retry_of_run_id'),
+  activeResult: boolean('active_result').default(true).notNull(),
+  lastError: text('last_error'),
+  ...timestamps
+}, (table) => [
+  check('provider_runs_status_check', sql`${table.status} IN ('reserved','processing','dispatching','completed','failed','ambiguous','superseded_ambiguous','late_completed')`),
+  check('provider_runs_cost_nonnegative_check', sql`${table.estimatedCostMicros} >= 0 AND ${table.reservedCostMicros} >= 0 AND (${table.settledCostMicros} IS NULL OR ${table.settledCostMicros} >= 0)`),
+  uniqueIndex('provider_runs_active_success_fingerprint_unique').on(table.projectId, table.provider, table.model, table.operation, table.inputFingerprint).where(sql`${table.status} IN ('reserved','processing','dispatching','completed','ambiguous') AND ${table.activeResult} = true`),
+  index('provider_runs_project_created_idx').on(table.projectId, table.createdAt),
+  index('provider_runs_dispatch_deadline_idx').on(table.dispatchDeadlineAt).where(sql`${table.status} = 'dispatching'`)
+]);
+
+export const providerArtifacts = pgTable('provider_artifacts', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull(),
+  providerRunId: uuid('provider_run_id'),
+  provider: varchar('provider', {length: 80}).notNull(),
+  providerArtifactId: text('provider_artifact_id').notNull(),
+  status: varchar('status', {length: 30}).default('active').notNull(),
+  expiresAt: timestamp('expires_at', {withTimezone: true}).notNull(),
+  cleanupAttempts: integer('cleanup_attempts').default(0).notNull(),
+  lastCleanupError: text('last_cleanup_error'),
+  ...timestamps
+}, (table) => [
+  check('provider_artifacts_status_check', sql`${table.status} IN ('active','cleanup_pending','deletion_pending','cleanup_processing','deletion_processing','deleted','expired_confirmed')`),
+  uniqueIndex('provider_artifacts_provider_identifier_unique').on(table.provider, table.providerArtifactId),
+  index('provider_artifacts_cleanup_due_idx').on(table.status, table.expiresAt)
+]);
