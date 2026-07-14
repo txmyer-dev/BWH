@@ -12,6 +12,7 @@ import {getDatabase} from '@/server/db/client';
 import {parseEnv} from '@/server/env';
 import {verifyCloudTaskRequest} from '@/server/queue/cloud-tasks';
 import {InlineQueue} from '@/server/queue/inline-queue';
+import {internalAnalysisErrorStatus} from './response-status';
 
 const taskSchema = z.object({type: z.literal('analyze_collection'), projectId: z.string().uuid(), jobId: z.string().uuid()}).strict();
 
@@ -32,6 +33,6 @@ export async function POST(request: Request) {
     return NextResponse.json({status: 'completed'});
   } catch (error) {
     const code = error instanceof Error ? error.message : 'ANALYSIS_PROCESSING_FAILED';
-    return NextResponse.json({error: code}, {status: code === 'CLOUD_TASK_UNAUTHORIZED' ? 401 : 400});
+    return NextResponse.json({error: code}, {status: internalAnalysisErrorStatus(code)});
   }
 }

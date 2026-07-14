@@ -13,16 +13,6 @@ Return every candidate only as proposed. Keep interpretations in hypotheses. Eve
 
 type ResponsesClient = Pick<OpenAI, 'responses'>;
 
-const isShortLivedGcsUrl = (value: string) => {
-  try {
-    const url = new URL(value);
-    const lifetime = Number(url.searchParams.get('X-Goog-Expires'));
-    return url.protocol === 'https:' && Boolean(url.searchParams.get('X-Goog-Signature')) && Boolean(url.searchParams.get('X-Goog-Credential')) && Number.isFinite(lifetime) && lifetime > 0 && lifetime <= 15 * 60;
-  } catch {
-    return false;
-  }
-};
-
 export class OpenAIStoryAgent implements StoryAgent {
   constructor(private readonly client: ResponsesClient) {}
 
@@ -35,16 +25,17 @@ export class OpenAIStoryAgent implements StoryAgent {
     for (const asset of assets) {
       content.push({
         type: 'input_text',
-        text: `<untrusted_evidence asset_id="${asset.id}" kind="${asset.kind}">\n${asset.caption ?? asset.text ?? '(visual evidence follows)'}`
+        text: `UNTRUSTED_EVIDENCE_JSON\n${JSON.stringify({
+          trust: 'untrusted', assetId: asset.id, kind: asset.kind,
+          caption: asset.caption ?? null, text: asset.text ?? null
+        })}`
       });
       if (asset.kind === 'image') {
-        const imageUrl = asset.imageBytes ?? asset.imageUrl;
-        if (!imageUrl || (!imageUrl.startsWith('data:image/') && !isShortLivedGcsUrl(imageUrl))) {
+        if (!asset.imageBytes || asset.imageUrl) {
           throw new Error('UNSAFE_IMAGE_SOURCE');
         }
-        content.push({type: 'input_image', image_url: imageUrl, detail: 'high'});
+        content.push({type: 'input_image', image_url: asset.imageBytes, detail: 'high'});
       }
-      content.push({type: 'input_text', text: '</untrusted_evidence>'});
     }
 
     const response = await this.client.responses.parse({

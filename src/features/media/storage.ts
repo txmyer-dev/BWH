@@ -9,5 +9,6 @@ export interface MediaStorage {
     expiresInMs: number;
   }): Promise<string>;
   stat(objectKey: string): Promise<{size: number; contentType: string}>;
+  readObject(input: {objectKey: string; maxBytes: number}): Promise<Buffer>;
   deleteMany(objectKeys: string[]): Promise<void>;
 }

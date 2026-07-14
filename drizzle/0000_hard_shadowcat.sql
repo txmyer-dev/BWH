@@ -78,6 +78,9 @@ CREATE TABLE "processing_jobs" (
 	"job_type" varchar(40) NOT NULL,
 	"status" varchar(30) DEFAULT 'pending' NOT NULL,
 	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"processing_started_at" timestamp with time zone,
+	"lease_expires_at" timestamp with time zone,
+	"lease_token" uuid,
 	"last_error" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -152,4 +155,4 @@ CREATE UNIQUE INDEX "assets_original_object_key_unique" ON "assets" USING btree 
 CREATE UNIQUE INDEX "storyboards_project_id_unique" ON "storyboards" USING btree ("project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "subjects_project_id_unique" ON "subjects" USING btree ("project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "voice_profiles_project_id_unique" ON "voice_profiles" USING btree ("project_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "processing_jobs_active_analysis_unique" ON "processing_jobs" USING btree ("project_id","job_type") WHERE "processing_jobs"."status" IN ('pending', 'processing');
+CREATE UNIQUE INDEX "processing_jobs_active_analysis_unique" ON "processing_jobs" USING btree ("project_id","job_type") WHERE "processing_jobs"."status" IN ('pending', 'processing', 'failed');

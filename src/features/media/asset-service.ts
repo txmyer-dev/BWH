@@ -35,6 +35,7 @@ export interface Asset {
   capturedAtText: string | null;
   knownPeople: string[];
   sequenceOrder: number;
+  transcript?: string | null;
 }
 
 type NewReservation = Omit<
@@ -65,6 +66,7 @@ const mapRow = (row: typeof assets.$inferSelect): Asset => {
     size?: number;
     knownPeople?: string[];
     originalName?: string;
+    transcript?: string;
   };
   return {
     id: row.id,
@@ -84,7 +86,8 @@ const mapRow = (row: typeof assets.$inferSelect): Asset => {
     caption: row.caption,
     capturedAtText: row.capturedAtText,
     knownPeople: Array.isArray(metadata.knownPeople) ? metadata.knownPeople : [],
-    sequenceOrder: row.sequenceOrder
+    sequenceOrder: row.sequenceOrder,
+    transcript: typeof metadata.transcript === 'string' ? metadata.transcript : null
   };
 };
 
@@ -236,7 +239,8 @@ export class PostgresAssetRepository implements AssetRepository {
           metadata: {
             originalName: reservation.originalName,
             size: reservation.size,
-            knownPeople: reservation.knownPeople
+            knownPeople: reservation.knownPeople,
+            transcript: reservation.transcript
           }
         })
         .returning();
@@ -279,6 +283,7 @@ export class PostgresAssetRepository implements AssetRepository {
           originalName: existing.originalName,
           kind: existing.kind,
           knownPeople: existing.knownPeople,
+          transcript: existing.transcript,
           size: metadata.size
         },
         updatedAt: new Date()

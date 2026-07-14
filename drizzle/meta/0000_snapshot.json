@@ -611,6 +611,24 @@
           "notNull": true,
           "default": 0
         },
+        "processing_started_at": {
+          "name": "processing_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_error": {
           "name": "last_error",
           "type": "text",
@@ -650,7 +668,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"processing_jobs\".\"status\" IN ('pending', 'processing')",
+          "where": "\"processing_jobs\".\"status\" IN ('pending', 'processing', 'failed')",
           "concurrently": false,
           "method": "btree",
           "with": {}

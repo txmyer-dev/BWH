@@ -3,6 +3,7 @@ import {describe, expect, it, vi} from 'vitest';
 import {InMemoryEvidenceRepository} from './evidence-repository';
 import {EvidenceService} from './evidence-service';
 import {InlineQueue} from '../../server/queue/inline-queue';
+import type {TaskQueue} from '../../server/queue/task-queue';
 
 const projectId = crypto.randomUUID();
 const imageIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
@@ -20,14 +21,13 @@ const analysis = {
   evidenceCandidates: [candidate], hypotheses: [], rankedGaps: []
 };
 
-const setup = (authorized = true) => {
+const setup = (authorized = true, queue: TaskQueue & {tasks?: unknown[]} = new InlineQueue(), now: () => Date = () => new Date('2026-07-14T12:00:00Z')) => {
   const repository = new InMemoryEvidenceRepository();
-  const queue = new InlineQueue();
   const agent = {analyzeCollection: vi.fn().mockResolvedValue(analysis)};
   const assets = {listReadyAnalysisAssets: vi.fn().mockResolvedValue(imageIds.map((id) => ({id, kind: 'image' as const, imageBytes: 'data:image/jpeg;base64,YQ=='})))};
   const service = new EvidenceService(repository, queue, agent, assets, async () => {
     if (!authorized) throw new Error('PROJECT_FORBIDDEN');
-  });
+  }, now);
   return {agent, assets, queue, repository, service};
 };
 
@@ -39,6 +39,20 @@ describe('EvidenceService', () => {
     expect(second).toEqual(first);
     expect(first.status).toBe('pending');
     expect(queue.tasks).toEqual([{type: 'analyze_collection', projectId, jobId: first.jobId}]);
+  });
+
+  it('recovers delivery when enqueue fails after job creation', async () => {
+    const delivered: unknown[] = [];
+    let fail = true;
+    const queue: TaskQueue = {enqueue: async (task) => {
+      if (fail) throw new Error('QUEUE_UNAVAILABLE');
+      delivered.push(task);
+    }};
+    const context = setup(true, queue);
+    await expect(context.service.requestAnalysis(projectId)).rejects.toThrow('QUEUE_UNAVAILABLE');
+    fail = false;
+    const recovered = await context.service.requestAnalysis(projectId);
+    expect(delivered).toEqual([{type: 'analyze_collection', projectId, jobId: recovered.jobId}]);
   });
 
   it('rejects unauthorized requests before queueing', async () => {
@@ -64,6 +78,31 @@ describe('EvidenceService', () => {
     const {jobId} = await context.service.requestAnalysis(projectId);
     await expect(context.service.processAnalysis({projectId, jobId})).rejects.toThrow('TEMPORARY_PROVIDER_FAILURE');
     await expect(context.service.processAnalysis({projectId, jobId})).resolves.toEqual(analysis);
+    expect(await context.repository.listByProject(projectId)).toHaveLength(1);
+  });
+
+  it('reclaims a crashed processing lease after timeout and excludes concurrent claims', async () => {
+    let now = new Date('2026-07-14T12:00:00Z');
+    const context = setup(true, new InlineQueue(), () => now);
+    const {jobId} = await context.service.requestAnalysis(projectId);
+    const crashed = await context.repository.claimAnalysisJob(jobId, projectId, now, 60_000);
+    expect(crashed.outcome).toBe('claimed');
+    await expect(context.service.processAnalysis({projectId, jobId})).rejects.toThrow('ANALYSIS_JOB_BUSY');
+    now = new Date('2026-07-14T12:01:01Z');
+    await expect(context.service.processAnalysis({projectId, jobId})).resolves.toEqual(analysis);
+    expect(await context.repository.listByProject(projectId)).toHaveLength(1);
+  });
+
+  it('fences a stale worker after another delivery reclaims its expired lease', async () => {
+    const context = setup();
+    const {jobId} = await context.service.requestAnalysis(projectId);
+    const first = await context.repository.claimAnalysisJob(jobId, projectId, new Date('2026-07-14T12:00:00Z'), 60_000);
+    const second = await context.repository.claimAnalysisJob(jobId, projectId, new Date('2026-07-14T12:01:01Z'), 60_000);
+    expect(first.outcome).toBe('claimed');
+    expect(second.outcome).toBe('claimed');
+    if (first.outcome !== 'claimed' || second.outcome !== 'claimed') throw new Error('CLAIM_SETUP_FAILED');
+    await expect(context.repository.completeAnalysis(jobId, projectId, first.leaseToken, [candidate])).rejects.toThrow('ANALYSIS_LEASE_LOST');
+    await context.repository.completeAnalysis(jobId, projectId, second.leaseToken, [candidate]);
     expect(await context.repository.listByProject(projectId)).toHaveLength(1);
   });
 

@@ -43,6 +43,14 @@ export class GcsMediaStorage implements MediaStorage {
     return {size, contentType};
   }
 
+  async readObject(input: {objectKey: string; maxBytes: number}) {
+    const metadata = await this.stat(input.objectKey);
+    if (metadata.size > input.maxBytes) throw new Error('OBJECT_TOO_LARGE');
+    const [bytes] = await this.bucket.file(input.objectKey).download();
+    if (bytes.byteLength > input.maxBytes) throw new Error('OBJECT_TOO_LARGE');
+    return bytes;
+  }
+
   async deleteMany(objectKeys: string[]) {
     await Promise.all(
       objectKeys.map((objectKey) =>

@@ -201,12 +201,15 @@ export const processingJobs = pgTable(
     jobType: varchar('job_type', {length: 40}).notNull(),
     status: varchar('status', {length: 30}).default('pending').notNull(),
     attemptCount: integer('attempt_count').default(0).notNull(),
+    processingStartedAt: timestamp('processing_started_at', {withTimezone: true}),
+    leaseExpiresAt: timestamp('lease_expires_at', {withTimezone: true}),
+    leaseToken: uuid('lease_token'),
     lastError: text('last_error'),
     ...timestamps
   },
   (table) => [
     uniqueIndex('processing_jobs_active_analysis_unique')
       .on(table.projectId, table.jobType)
-      .where(sql`${table.status} IN ('pending', 'processing')`)
+      .where(sql`${table.status} IN ('pending', 'processing', 'failed')`)
   ]
 );

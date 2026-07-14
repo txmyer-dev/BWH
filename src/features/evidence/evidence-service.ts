@@ -11,13 +11,29 @@ export class PrivateAnalysisAssetSource implements AnalysisAssetSource {
   constructor(private readonly repository: AssetRepository, private readonly storage: MediaStorage) {}
 
   async listReadyAnalysisAssets(projectId: string) {
-    const ready = (await this.repository.listByProject(projectId)).filter((asset) => asset.processingStatus === 'ready');
-    return Promise.all(ready.filter((asset) => asset.kind === 'image').map(async (asset) => ({
-      id: asset.id,
-      kind: 'image' as const,
-      caption: asset.caption ?? undefined,
-      imageUrl: await this.storage.createDownloadUrl({objectKey: asset.originalObjectKey, expiresInMs: 5 * 60 * 1_000})
-    })));
+    const ready = (await this.repository.listByProject(projectId))
+      .filter((asset) => asset.processingStatus === 'ready')
+      .sort((left, right) => {
+        if (left.kind === 'image' && right.kind === 'image') return left.sequenceOrder - right.sequenceOrder;
+        const rank = {image: 0, text: 1, source_audio: 2, creator_narration: 3};
+        return rank[left.kind] - rank[right.kind];
+      });
+    const result: AnalysisAsset[] = [];
+    for (const asset of ready) {
+      if (asset.kind === 'image') {
+        const bytes = await this.storage.readObject({objectKey: asset.originalObjectKey, maxBytes: 25 * 1024 * 1024});
+        const context = [asset.caption, asset.capturedAtText && `Date: ${asset.capturedAtText}`, asset.knownPeople.length > 0 && `Known people: ${asset.knownPeople.join(', ')}`].filter(Boolean).join('\n');
+        result.push({id: asset.id, kind: 'image', caption: context || undefined, imageBytes: `data:${asset.mimeType};base64,${bytes.toString('base64')}`});
+      } else if (asset.kind === 'text') {
+        if (asset.size > 50_000) throw new Error('ANALYSIS_TEXT_TOO_LARGE');
+        const bytes = await this.storage.readObject({objectKey: asset.originalObjectKey, maxBytes: 50_000});
+        result.push({id: asset.id, kind: 'text', text: bytes.toString('utf8')});
+      } else if (asset.kind === 'source_audio' && asset.transcript) {
+        if (Buffer.byteLength(asset.transcript, 'utf8') > 50_000) throw new Error('ANALYSIS_TEXT_TOO_LARGE');
+        result.push({id: asset.id, kind: 'transcript', text: asset.transcript});
+      }
+    }
+    return result;
   }
 }
 
@@ -27,13 +43,17 @@ export class EvidenceService {
     private readonly queue: TaskQueue,
     private readonly agent: StoryAgent,
     private readonly assets: AnalysisAssetSource,
-    private readonly assertCreator: (projectId: string) => Promise<void>
+    private readonly assertCreator: (projectId: string) => Promise<void>,
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   async requestAnalysis(projectId: string): Promise<{jobId: string; status: string}> {
     await this.assertCreator(projectId);
     const current = await this.repository.findActiveAnalysisJob(projectId);
-    if (current) return {jobId: current.id, status: current.status};
+    if (current) {
+      await this.queue.enqueue({type: 'analyze_collection', projectId, jobId: current.id});
+      return {jobId: current.id, status: current.status};
+    }
     const ready = await this.assets.listReadyAnalysisAssets(projectId);
     const imageCount = ready.filter((asset) => asset.kind === 'image').length;
     if (imageCount < 3 || imageCount > 7) throw new Error('THREE_TO_SEVEN_READY_IMAGES_REQUIRED');
@@ -43,16 +63,19 @@ export class EvidenceService {
   }
 
   async processAnalysis(input: {projectId: string; jobId: string}) {
-    if (!(await this.repository.claimAnalysisJob(input.jobId, input.projectId))) return;
+    const claim = await this.repository.claimAnalysisJob(input.jobId, input.projectId, this.now(), 5 * 60 * 1_000);
+    if (claim.outcome === 'completed') return;
+    if (claim.outcome === 'busy') throw new Error('ANALYSIS_JOB_BUSY');
+    if (claim.outcome === 'missing') throw new Error('ANALYSIS_JOB_NOT_FOUND');
     try {
       const assets = await this.assets.listReadyAnalysisAssets(input.projectId);
       const imageCount = assets.filter((asset) => asset.kind === 'image').length;
       if (imageCount < 3 || imageCount > 7) throw new Error('THREE_TO_SEVEN_READY_IMAGES_REQUIRED');
       const analysis = await this.agent.analyzeCollection({projectId: input.projectId, assets});
-      await this.repository.completeAnalysis(input.jobId, input.projectId, analysis.evidenceCandidates);
+      await this.repository.completeAnalysis(input.jobId, input.projectId, claim.leaseToken, analysis.evidenceCandidates);
       return analysis;
     } catch (error) {
-      await this.repository.failAnalysis(input.jobId, error instanceof Error ? error.message : 'ANALYSIS_FAILED');
+      await this.repository.failAnalysis(input.jobId, claim.leaseToken, error instanceof Error ? error.message : 'ANALYSIS_FAILED');
       throw error;
     }
   }

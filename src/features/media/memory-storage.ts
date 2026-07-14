@@ -1,6 +1,6 @@
 import type {MediaStorage} from './storage';
 
-type StoredObject = {size: number; contentType: string};
+type StoredObject = {size: number; contentType: string; data?: Buffer};
 
 export class MemoryStorage implements MediaStorage {
   private readonly objects = new Map<string, StoredObject>();
@@ -33,16 +33,23 @@ export class MemoryStorage implements MediaStorage {
     return {...object};
   }
 
+  async readObject(input: {objectKey: string; maxBytes: number}) {
+    const object = this.objects.get(input.objectKey);
+    if (!object) throw new Error('UPLOAD_NOT_FOUND');
+    if (object.size > input.maxBytes) throw new Error('OBJECT_TOO_LARGE');
+    return object.data ? Buffer.from(object.data) : Buffer.alloc(object.size);
+  }
+
   async deleteMany(objectKeys: string[]) {
     for (const objectKey of objectKeys) {
       this.objects.delete(objectKey);
     }
   }
 
-  upload(objectKey: string, size: number, contentType: string) {
+  upload(objectKey: string, size: number, contentType: string, data?: Buffer | string) {
     if (this.objects.has(objectKey)) {
       throw new Error('OBJECT_ALREADY_EXISTS');
     }
-    this.objects.set(objectKey, {size, contentType});
+    this.objects.set(objectKey, {size, contentType, data: data === undefined ? undefined : Buffer.from(data)});
   }
 }
