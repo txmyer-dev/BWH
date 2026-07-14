@@ -1,4 +1,5 @@
 import {
+  check,
   integer,
   jsonb,
   pgTable,
@@ -9,6 +10,7 @@ import {
   uuid,
   varchar
 } from 'drizzle-orm/pg-core';
+import {sql} from 'drizzle-orm';
 
 const timestamps = {
   createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull(),
@@ -45,25 +47,44 @@ export const subjects = pgTable(
   (table) => [uniqueIndex('subjects_project_id_unique').on(table.projectId)]
 );
 
-export const assets = pgTable('assets', {
-  id: uuid('id').primaryKey(),
-  projectId: uuid('project_id')
-    .notNull()
-    .references(() => projects.id, {onDelete: 'cascade'}),
-  type: varchar('type', {length: 20}).notNull(),
-  mimeType: varchar('mime_type', {length: 120}).notNull(),
-  originalObjectKey: text('original_object_key').notNull(),
-  derivativeObjectKey: text('derivative_object_key'),
-  processingStatus: varchar('processing_status', {length: 30})
-    .default('pending')
-    .notNull(),
-  processingError: text('processing_error'),
-  caption: text('caption'),
-  capturedAtText: text('captured_at_text'),
-  sequenceOrder: integer('sequence_order').notNull(),
-  metadata: jsonb('metadata').default({}).notNull(),
-  ...timestamps
-});
+export const assets = pgTable(
+  'assets',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, {onDelete: 'cascade'}),
+    type: varchar('type', {length: 20}).notNull(),
+    assetKind: varchar('asset_kind', {length: 30}).notNull(),
+    mimeType: varchar('mime_type', {length: 120}).notNull(),
+    originalObjectKey: text('original_object_key').notNull(),
+    derivativeObjectKey: text('derivative_object_key'),
+    processingStatus: varchar('processing_status', {length: 30})
+      .default('pending')
+      .notNull(),
+    processingError: text('processing_error'),
+    caption: text('caption'),
+    capturedAtText: text('captured_at_text'),
+    sequenceOrder: integer('sequence_order').notNull(),
+    reservationExpiresAt: timestamp('reservation_expires_at', {
+      withTimezone: true
+    }),
+    metadata: jsonb('metadata').default({}).notNull(),
+    ...timestamps
+  },
+  (table) => [
+    check(
+      'assets_kind_sequence_check',
+      sql`(${table.assetKind} = 'image' AND ${table.sequenceOrder} BETWEEN 0 AND 6) OR (${table.assetKind} IN ('text', 'source_audio', 'creator_narration') AND ${table.sequenceOrder} = 0)`
+    ),
+    uniqueIndex('assets_project_kind_sequence_unique').on(
+      table.projectId,
+      table.assetKind,
+      table.sequenceOrder
+    ),
+    uniqueIndex('assets_original_object_key_unique').on(table.originalObjectKey)
+  ]
+);
 
 export const interviewQuestions = pgTable('interview_questions', {
   id: uuid('id').primaryKey(),

@@ -18,7 +18,8 @@ export class GcsMediaStorage implements MediaStorage {
       version: 'v4',
       action: 'write',
       expires: Date.now() + input.expiresInMs,
-      contentType: input.contentType
+      contentType: input.contentType,
+      extensionHeaders: {'x-goog-if-generation-match': '0'}
     });
     return url;
   }

@@ -20,7 +20,9 @@ const image = (overrides: Partial<UploadFile> = {}): UploadFile => ({
   ...overrides
 });
 
-const setup = async () => {
+const setup = async (
+  now: () => Date = () => new Date('2026-07-14T12:00:00Z')
+) => {
   const projectService = new ProjectService(new InMemoryProjectRepository());
   const project = await projectService.createProject({
     title: 'Maple Street',
@@ -30,7 +32,7 @@ const setup = async () => {
   });
   const repository = new InMemoryAssetRepository();
   const storage = new MemoryStorage();
-  const service = new AssetService(repository, storage, projectService);
+  const service = new AssetService(repository, storage, projectService, now);
   return {project, repository, service, storage};
 };
 
@@ -83,6 +85,33 @@ describe('AssetService upload policy', () => {
     ).rejects.toThrow('IMAGE_LIMIT_REACHED');
   });
 
+  it('atomically limits concurrent image and singleton reservations', async () => {
+    const context = await setup();
+    const imageResults = await Promise.allSettled(
+      Array.from({length: 8}, (_, index) =>
+        context.service.requestUpload(
+          context.project.projectId,
+          context.project.ownerToken,
+          image({name: `${index}.jpg`})
+        )
+      )
+    );
+    expect(imageResults.filter((result) => result.status === 'fulfilled')).toHaveLength(7);
+    expect(imageResults.filter((result) => result.status === 'rejected')).toHaveLength(1);
+
+    const singleton = {
+      kind: 'text' as const,
+      name: 'notes.txt',
+      contentType: 'text/plain',
+      size: 100
+    };
+    const singletonResults = await Promise.allSettled([
+      context.service.requestUpload(context.project.projectId, context.project.ownerToken, singleton),
+      context.service.requestUpload(context.project.projectId, context.project.ownerToken, singleton)
+    ]);
+    expect(singletonResults.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  });
+
   it.each(['image/jpeg', 'image/png', 'image/webp'])(
     'accepts the approved image type %s',
     async (contentType) => {
@@ -120,8 +149,8 @@ describe('AssetService upload policy', () => {
 
   it.each([
     {kind: 'text' as const, name: 'supporting.txt', contentType: 'text/plain', size: 100},
-    {kind: 'source-audio' as const, name: 'memory.mp3', contentType: 'audio/mpeg', size: 1_000},
-    {kind: 'creator-narration' as const, name: 'narration.wav', contentType: 'audio/wav', size: 1_000}
+    {kind: 'source_audio' as const, name: 'memory.mp3', contentType: 'audio/mpeg', size: 1_000},
+    {kind: 'creator_narration' as const, name: 'narration.wav', contentType: 'audio/wav', size: 1_000}
   ])('allows only one $kind asset', async (file) => {
     const context = await setup();
     await context.service.requestUpload(
@@ -153,9 +182,98 @@ describe('AssetService upload policy', () => {
       context.service.requestUpload(
         context.project.projectId,
         context.project.ownerToken,
-        {kind: 'source-audio', name: 'memory.mp3', contentType: 'audio/mpeg', size: AUDIO_BYTES + 1}
+        {kind: 'source_audio', name: 'memory.mp3', contentType: 'audio/mpeg', size: AUDIO_BYTES + 1}
       )
     ).rejects.toThrow('FILE_TOO_LARGE');
+  });
+
+  it('rejects unknown runtime asset kinds instead of treating them as audio', async () => {
+    const context = await setup();
+    await expect(
+      context.service.requestUpload(
+        context.project.projectId,
+        context.project.ownerToken,
+        {
+          kind: 'arbitrary',
+          name: 'payload.mp3',
+          contentType: 'audio/mpeg',
+          size: 100
+        } as unknown as UploadFile
+      )
+    ).rejects.toThrow('INVALID_ASSET_KIND');
+  });
+
+  it('uses underscore runtime names for both audio roles', async () => {
+    const context = await setup();
+    for (const kind of ['source_audio', 'creator_narration'] as const) {
+      await expect(
+        context.service.requestUpload(
+          context.project.projectId,
+          context.project.ownerToken,
+          {kind, name: `${kind}.wav`, contentType: 'audio/wav', size: 100} as unknown as UploadFile
+        )
+      ).resolves.toEqual(expect.objectContaining({assetId: expect.any(String)}));
+    }
+  });
+
+  it('safely reuses a compatible pending reservation and rejects cross-file reuse', async () => {
+    const context = await setup();
+    const file = {kind: 'text' as const, name: 'notes.txt', contentType: 'text/plain', size: 100};
+    const first = await context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      file
+    );
+    const retried = await context.service.requestUpload(
+      context.project.projectId,
+      context.project.ownerToken,
+      {...file, reservationId: first.assetId} as UploadFile
+    );
+    expect(retried).toMatchObject({assetId: first.assetId, objectKey: first.objectKey});
+
+    await expect(
+      context.service.requestUpload(
+        context.project.projectId,
+        context.project.ownerToken,
+        {...file, name: 'different.txt', reservationId: first.assetId} as UploadFile
+      )
+    ).rejects.toThrow('UPLOAD_RESERVATION_MISMATCH');
+  });
+
+  it('never reopens a completed original reservation for writing', async () => {
+    const context = await setup();
+    const file = image();
+    const ready = await uploadAndComplete(context, file);
+    const signedBeforeRetry = context.storage.signedRequests.length;
+
+    await expect(
+      context.service.requestUpload(
+        context.project.projectId,
+        context.project.ownerToken,
+        {...file, reservationId: ready.id}
+      )
+    ).rejects.toThrow('UPLOAD_RESERVATION_MISMATCH');
+    expect(context.storage.signedRequests).toHaveLength(signedBeforeRetry);
+  });
+
+  it('releases expired pending reservations so failed attempts do not exhaust quotas', async () => {
+    let now = new Date('2026-07-14T12:00:00Z');
+    const context = await setup(() => now);
+    for (let index = 0; index < 7; index += 1) {
+      await context.service.requestUpload(
+        context.project.projectId,
+        context.project.ownerToken,
+        image({name: `${index}.jpg`})
+      );
+    }
+    now = new Date('2026-07-14T12:11:00Z');
+    await expect(
+      context.service.requestUpload(
+        context.project.projectId,
+        context.project.ownerToken,
+        image({name: 'replacement.jpg'})
+      )
+    ).resolves.toEqual(expect.objectContaining({assetId: expect.any(String)}));
   });
 
   it('uses project-prefixed immutable original object keys', async () => {

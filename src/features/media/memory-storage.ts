@@ -40,6 +40,9 @@ export class MemoryStorage implements MediaStorage {
   }
 
   upload(objectKey: string, size: number, contentType: string) {
+    if (this.objects.has(objectKey)) {
+      throw new Error('OBJECT_ALREADY_EXISTS');
+    }
     this.objects.set(objectKey, {size, contentType});
   }
 }

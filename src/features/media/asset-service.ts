@@ -1,20 +1,21 @@
 import {randomUUID} from 'node:crypto';
 
-import {and, eq} from 'drizzle-orm';
+import {and, eq, lt, sql} from 'drizzle-orm';
 
 import type {ProjectService} from '../projects/project-service';
 import type {Database} from '../../server/db/client';
-import {assets} from '../../server/db/schema';
-import {validateFile} from './file-policy';
+import {assets, projects} from '../../server/db/schema';
+import {parseUploadFile, validateFile} from './file-policy';
 import type {MediaStorage} from './storage';
 
-export type AssetKind = 'image' | 'text' | 'source-audio' | 'creator-narration';
+export type AssetKind = 'image' | 'text' | 'source_audio' | 'creator_narration';
 
 export interface UploadFile {
   kind: AssetKind;
   name: string;
   contentType: string;
   size: number;
+  reservationId?: string;
   caption?: string;
   capturedAtText?: string;
   knownPeople?: string[];
@@ -24,22 +25,33 @@ export interface Asset {
   id: string;
   projectId: string;
   kind: AssetKind;
+  originalName: string;
   mimeType: string;
   originalObjectKey: string;
   processingStatus: 'pending' | 'ready';
-  size: number | null;
+  reservationExpiresAt: Date | null;
+  size: number;
   caption: string | null;
   capturedAtText: string | null;
   knownPeople: string[];
   sequenceOrder: number;
 }
 
-type NewAsset = Omit<Asset, 'processingStatus' | 'size'>;
+type NewReservation = Omit<
+  Asset,
+  'processingStatus' | 'sequenceOrder'
+>;
+
+type ReservationResult = {asset: Asset; releasedObjectKeys: string[]};
 
 export interface AssetRepository {
   listByProject(projectId: string): Promise<Asset[]>;
   findById(assetId: string): Promise<Asset | undefined>;
-  createPending(asset: NewAsset): Promise<void>;
+  reservePending(
+    reservation: NewReservation,
+    retryAssetId: string | undefined,
+    now: Date
+  ): Promise<ReservationResult>;
   complete(
     assetId: string,
     expectedOriginalObjectKey: string,
@@ -47,39 +59,52 @@ export interface AssetRepository {
   ): Promise<Asset>;
 }
 
-const readKind = (metadata: unknown, type: string): AssetKind => {
-  if (
-    metadata &&
-    typeof metadata === 'object' &&
-    'kind' in metadata &&
-    ['image', 'text', 'source-audio', 'creator-narration'].includes(
-      String(metadata.kind)
-    )
-  ) {
-    return metadata.kind as AssetKind;
-  }
-  return type === 'audio' ? 'source-audio' : (type as AssetKind);
-};
-
 const mapRow = (row: typeof assets.$inferSelect): Asset => {
   const metadata = (row.metadata ?? {}) as {
-    kind?: string;
     size?: number;
     knownPeople?: string[];
+    originalName?: string;
   };
   return {
     id: row.id,
     projectId: row.projectId,
-    kind: readKind(metadata, row.type),
+    kind: row.assetKind as AssetKind,
+    originalName: metadata.originalName ?? '',
     mimeType: row.mimeType,
     originalObjectKey: row.originalObjectKey,
     processingStatus: row.processingStatus === 'ready' ? 'ready' : 'pending',
-    size: typeof metadata.size === 'number' ? metadata.size : null,
+    reservationExpiresAt: row.reservationExpiresAt,
+    size: typeof metadata.size === 'number' ? metadata.size : 0,
     caption: row.caption,
     capturedAtText: row.capturedAtText,
     knownPeople: Array.isArray(metadata.knownPeople) ? metadata.knownPeople : [],
     sequenceOrder: row.sequenceOrder
   };
+};
+
+const reservationMatches = (asset: Asset, reservation: NewReservation) =>
+  asset.projectId === reservation.projectId &&
+  asset.kind === reservation.kind &&
+  asset.originalName === reservation.originalName &&
+  asset.mimeType === reservation.mimeType &&
+  asset.size === reservation.size;
+
+const allocateSequence = (kind: AssetKind, existing: Asset[]) => {
+  if (kind !== 'image') {
+    if (existing.some((asset) => asset.kind === kind)) {
+      throw new Error('ASSET_KIND_LIMIT_REACHED');
+    }
+    return 0;
+  }
+  const used = new Set(
+    existing
+      .filter((asset) => asset.kind === 'image')
+      .map((asset) => asset.sequenceOrder)
+  );
+  for (let sequence = 0; sequence < 7; sequence += 1) {
+    if (!used.has(sequence)) return sequence;
+  }
+  throw new Error('IMAGE_LIMIT_REACHED');
 };
 
 export class PostgresAssetRepository implements AssetRepository {
@@ -99,18 +124,86 @@ export class PostgresAssetRepository implements AssetRepository {
     return row ? mapRow(row) : undefined;
   }
 
-  async createPending(asset: NewAsset) {
-    await this.database.insert(assets).values({
-      id: asset.id,
-      projectId: asset.projectId,
-      type: asset.kind === 'source-audio' || asset.kind === 'creator-narration' ? 'audio' : asset.kind,
-      mimeType: asset.mimeType,
-      originalObjectKey: asset.originalObjectKey,
-      processingStatus: 'pending',
-      caption: asset.caption,
-      capturedAtText: asset.capturedAtText,
-      sequenceOrder: asset.sequenceOrder,
-      metadata: {kind: asset.kind, knownPeople: asset.knownPeople}
+  async reservePending(
+    reservation: NewReservation,
+    retryAssetId: string | undefined,
+    now: Date
+  ) {
+    return this.database.transaction(async (transaction) => {
+      // Every reservation for a project takes the same row lock. Counting,
+      // sequence allocation, and insert therefore form one atomic operation.
+      await transaction.execute(
+        sql`select ${projects.id} from ${projects} where ${projects.id} = ${reservation.projectId} for update`
+      );
+
+      const expired = await transaction
+        .delete(assets)
+        .where(
+          and(
+            eq(assets.projectId, reservation.projectId),
+            eq(assets.processingStatus, 'pending'),
+            lt(assets.reservationExpiresAt, now)
+          )
+        )
+        .returning({originalObjectKey: assets.originalObjectKey});
+
+      if (retryAssetId) {
+        const retryRow = await transaction.query.assets.findFirst({
+          where: (table, {and: all, eq: equals}) =>
+            all(
+              equals(table.id, retryAssetId),
+              equals(table.projectId, reservation.projectId)
+            )
+        });
+        if (!retryRow) throw new Error('UPLOAD_RESERVATION_EXPIRED');
+        const retry = mapRow(retryRow);
+        if (
+          retry.processingStatus !== 'pending' ||
+          !reservationMatches(retry, reservation)
+        ) {
+          throw new Error('UPLOAD_RESERVATION_MISMATCH');
+        }
+        return {
+          asset: retry,
+          releasedObjectKeys: expired.map((item) => item.originalObjectKey)
+        };
+      }
+
+      const currentRows = await transaction.query.assets.findMany({
+        where: (table, {eq: equals}) =>
+          equals(table.projectId, reservation.projectId)
+      });
+      const current = currentRows.map(mapRow);
+      const sequenceOrder = allocateSequence(reservation.kind, current);
+      const [created] = await transaction
+        .insert(assets)
+        .values({
+          id: reservation.id,
+          projectId: reservation.projectId,
+          type:
+            reservation.kind === 'source_audio' ||
+            reservation.kind === 'creator_narration'
+              ? 'audio'
+              : reservation.kind,
+          assetKind: reservation.kind,
+          mimeType: reservation.mimeType,
+          originalObjectKey: reservation.originalObjectKey,
+          processingStatus: 'pending',
+          caption: reservation.caption,
+          capturedAtText: reservation.capturedAtText,
+          sequenceOrder,
+          reservationExpiresAt: reservation.reservationExpiresAt,
+          metadata: {
+            originalName: reservation.originalName,
+            size: reservation.size,
+            knownPeople: reservation.knownPeople
+          }
+        })
+        .returning();
+      return {
+        asset: mapRow(created),
+        releasedObjectKeys: expired.map((item) => item.originalObjectKey)
+      };
     });
   }
 
@@ -120,9 +213,7 @@ export class PostgresAssetRepository implements AssetRepository {
     metadata: {size: number; contentType: string}
   ) {
     const existing = await this.findById(assetId);
-    if (!existing) {
-      throw new Error('ASSET_NOT_FOUND');
-    }
+    if (!existing) throw new Error('ASSET_NOT_FOUND');
     if (existing.originalObjectKey !== expectedOriginalObjectKey) {
       throw new Error('ORIGINAL_OBJECT_KEY_IMMUTABLE');
     }
@@ -130,8 +221,10 @@ export class PostgresAssetRepository implements AssetRepository {
       .update(assets)
       .set({
         processingStatus: 'ready',
+        reservationExpiresAt: null,
         mimeType: metadata.contentType,
         metadata: {
+          originalName: existing.originalName,
           kind: existing.kind,
           knownPeople: existing.knownPeople,
           size: metadata.size
@@ -146,8 +239,8 @@ export class PostgresAssetRepository implements AssetRepository {
       )
       .returning();
     if (!updated) {
-      const existing = await this.findById(assetId);
-      throw new Error(existing ? 'ORIGINAL_OBJECT_KEY_IMMUTABLE' : 'ASSET_NOT_FOUND');
+      const found = await this.findById(assetId);
+      throw new Error(found ? 'ORIGINAL_OBJECT_KEY_IMMUTABLE' : 'ASSET_NOT_FOUND');
     }
     return mapRow(updated);
   }
@@ -167,13 +260,53 @@ export class InMemoryAssetRepository implements AssetRepository {
     return asset ? {...asset, knownPeople: [...asset.knownPeople]} : undefined;
   }
 
-  async createPending(asset: NewAsset) {
-    this.assets.set(asset.id, {
-      ...asset,
+  async reservePending(
+    reservation: NewReservation,
+    retryAssetId: string | undefined,
+    now: Date
+  ): Promise<ReservationResult> {
+    const releasedObjectKeys: string[] = [];
+    for (const [id, asset] of this.assets) {
+      if (
+        asset.projectId === reservation.projectId &&
+        asset.processingStatus === 'pending' &&
+        asset.reservationExpiresAt &&
+        asset.reservationExpiresAt < now
+      ) {
+        this.assets.delete(id);
+        releasedObjectKeys.push(asset.originalObjectKey);
+      }
+    }
+
+    if (retryAssetId) {
+      const retry = this.assets.get(retryAssetId);
+      if (!retry) throw new Error('UPLOAD_RESERVATION_EXPIRED');
+      if (
+        retry.processingStatus !== 'pending' ||
+        !reservationMatches(retry, reservation)
+      ) {
+        throw new Error('UPLOAD_RESERVATION_MISMATCH');
+      }
+      return {
+        asset: {...retry, knownPeople: [...retry.knownPeople]},
+        releasedObjectKeys
+      };
+    }
+
+    const current = [...this.assets.values()].filter(
+      (asset) => asset.projectId === reservation.projectId
+    );
+    const created: Asset = {
+      ...reservation,
       processingStatus: 'pending',
-      size: null,
-      knownPeople: [...asset.knownPeople]
-    });
+      sequenceOrder: allocateSequence(reservation.kind, current),
+      knownPeople: [...reservation.knownPeople]
+    };
+    this.assets.set(created.id, created);
+    return {
+      asset: {...created, knownPeople: [...created.knownPeople]},
+      releasedObjectKeys
+    };
   }
 
   async complete(
@@ -182,9 +315,7 @@ export class InMemoryAssetRepository implements AssetRepository {
     metadata: {size: number; contentType: string}
   ) {
     const asset = this.assets.get(assetId);
-    if (!asset) {
-      throw new Error('ASSET_NOT_FOUND');
-    }
+    if (!asset) throw new Error('ASSET_NOT_FOUND');
     if (asset.originalObjectKey !== expectedOriginalObjectKey) {
       throw new Error('ORIGINAL_OBJECT_KEY_IMMUTABLE');
     }
@@ -192,7 +323,8 @@ export class InMemoryAssetRepository implements AssetRepository {
       ...asset,
       mimeType: metadata.contentType,
       size: metadata.size,
-      processingStatus: 'ready'
+      processingStatus: 'ready',
+      reservationExpiresAt: null
     };
     this.assets.set(assetId, ready);
     return {...ready, knownPeople: [...ready.knownPeople]};
@@ -215,50 +347,63 @@ const extensionFor = (file: UploadFile) => {
   return extensions[file.contentType] ?? 'bin';
 };
 
+const RESERVATION_LIFETIME_MS = 10 * 60 * 1_000;
+
 export class AssetService {
   constructor(
     private readonly repository: AssetRepository,
     private readonly storage: MediaStorage,
-    private readonly projects: Pick<ProjectService, 'assertProjectOwner'>
+    private readonly projects: Pick<ProjectService, 'assertProjectOwner'>,
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   async requestUpload(projectId: string, ownerToken: string, file: UploadFile) {
     await this.projects.assertProjectOwner(projectId, ownerToken);
-    validateFile(file);
-    const existing = await this.repository.listByProject(projectId);
-    const sameKind = existing.filter((asset) => asset.kind === file.kind).length;
-    if (file.kind === 'image' ? sameKind >= 7 : sameKind >= 1) {
-      throw new Error(
-        file.kind === 'image' ? 'IMAGE_LIMIT_REACHED' : 'ASSET_KIND_LIMIT_REACHED'
-      );
-    }
-
+    const validatedFile = parseUploadFile(file);
+    validateFile(validatedFile);
+    const now = this.now();
     const assetId = randomUUID();
-    const objectKey = `projects/${projectId}/originals/${assetId}.${extensionFor(file)}`;
-    await this.repository.createPending({
-      id: assetId,
-      projectId,
-      kind: file.kind,
-      mimeType: file.contentType,
-      originalObjectKey: objectKey,
-      caption: file.caption?.trim() || null,
-      capturedAtText: file.capturedAtText?.trim() || null,
-      knownPeople: file.knownPeople?.map((person) => person.trim()).filter(Boolean) ?? [],
-      sequenceOrder: existing.filter((asset) => asset.kind === 'image').length
-    });
+    const objectKey = `projects/${projectId}/originals/${assetId}.${extensionFor(validatedFile)}`;
+    const reservation = await this.repository.reservePending(
+      {
+        id: assetId,
+        projectId,
+        kind: validatedFile.kind,
+        originalName: validatedFile.name,
+        mimeType: validatedFile.contentType,
+        originalObjectKey: objectKey,
+        reservationExpiresAt: new Date(
+          now.getTime() + RESERVATION_LIFETIME_MS
+        ),
+        size: validatedFile.size,
+        caption: validatedFile.caption?.trim() || null,
+        capturedAtText: validatedFile.capturedAtText?.trim() || null,
+        knownPeople:
+          validatedFile.knownPeople
+            ?.map((person) => person.trim())
+            .filter(Boolean) ?? []
+      },
+      validatedFile.reservationId,
+      now
+    );
+    if (reservation.releasedObjectKeys.length > 0) {
+      await this.storage.deleteMany(reservation.releasedObjectKeys);
+    }
     const uploadUrl = await this.storage.createUploadUrl({
-      objectKey,
-      contentType: file.contentType,
+      objectKey: reservation.asset.originalObjectKey,
+      contentType: reservation.asset.mimeType,
       expiresInMs: 5 * 60 * 1_000
     });
-    return {assetId, uploadUrl, objectKey};
+    return {
+      assetId: reservation.asset.id,
+      uploadUrl,
+      objectKey: reservation.asset.originalObjectKey
+    };
   }
 
   async completeUpload(assetId: string) {
     const asset = await this.repository.findById(assetId);
-    if (!asset) {
-      throw new Error('ASSET_NOT_FOUND');
-    }
+    if (!asset) throw new Error('ASSET_NOT_FOUND');
     const metadata = await this.storage.stat(asset.originalObjectKey);
     validateFile({
       kind: asset.kind,
@@ -281,9 +426,9 @@ export class AssetService {
   }
 
   async assertReadyForAnalysis(projectId: string) {
-    const assets = await this.repository.listByProject(projectId);
+    const projectAssets = await this.repository.listByProject(projectId);
     if (
-      assets.filter(
+      projectAssets.filter(
         (asset) => asset.kind === 'image' && asset.processingStatus === 'ready'
       ).length < 3
     ) {

@@ -1,6 +1,13 @@
 'use client';
 
-import {use, useState, type ChangeEvent, type FormEvent} from 'react';
+import {
+  use,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent
+} from 'react';
 
 type ImageDraft = {
   file: File;
@@ -10,6 +17,13 @@ type ImageDraft = {
   knownPeople: string;
   progress: number;
   status: 'waiting' | 'uploading' | 'ready' | 'failed';
+  reservationId?: string;
+};
+
+type ExtraStatus = {
+  progress: number;
+  status: 'waiting' | 'uploading' | 'ready' | 'failed';
+  reservationId?: string;
 };
 
 const putWithProgress = (
@@ -22,6 +36,7 @@ const putWithProgress = (
     const request = new XMLHttpRequest();
     request.open('PUT', url);
     request.setRequestHeader('Content-Type', contentType);
+    request.setRequestHeader('x-goog-if-generation-match', '0');
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) {
         onProgress(Math.round((event.loaded / event.total) * 100));
@@ -44,14 +59,32 @@ export default function ProjectPage({
   const [images, setImages] = useState<ImageDraft[]>([]);
   const [supportingText, setSupportingText] = useState('');
   const [sourceAudio, setSourceAudio] = useState<File | null>(null);
+  const [textStatus, setTextStatus] = useState<ExtraStatus>({
+    progress: 0,
+    status: 'waiting'
+  });
+  const [audioStatus, setAudioStatus] = useState<ExtraStatus>({
+    progress: 0,
+    status: 'waiting'
+  });
   const [message, setMessage] = useState('Add at least three photographs.');
+  const previewUrls = useRef<string[]>([]);
+
+  useEffect(
+    () => () => {
+      previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    },
+    []
+  );
 
   const chooseImages = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []).slice(0, 7);
+    previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    previewUrls.current = selected.map((file) => URL.createObjectURL(file));
     setImages(
-      selected.map((file) => ({
+      selected.map((file, index) => ({
         file,
-        previewUrl: URL.createObjectURL(file),
+        previewUrl: previewUrls.current[index],
         caption: '',
         capturedAtText: '',
         knownPeople: '',
@@ -72,16 +105,29 @@ export default function ProjectPage({
   const upload = async (
     body: Blob,
     file: {
-      kind: 'image' | 'text' | 'source-audio';
+      kind: 'image' | 'text' | 'source_audio';
       name: string;
       contentType: string;
       size: number;
       caption?: string;
       capturedAtText?: string;
       knownPeople?: string[];
+      reservationId?: string;
     },
-    onProgress: (progress: number) => void
+    onProgress: (progress: number) => void,
+    onReservation: (assetId: string) => void
   ) => {
+    if (file.reservationId) {
+      const priorCompletion = await fetch(
+        `/api/projects/${projectId}/assets/upload-url`,
+        {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({assetId: file.reservationId})
+        }
+      );
+      if (priorCompletion.ok) return;
+    }
     const response = await fetch(
       `/api/projects/${projectId}/assets/upload-url`,
       {
@@ -92,6 +138,7 @@ export default function ProjectPage({
     );
     if (!response.ok) throw new Error('UPLOAD_FAILED');
     const signed = (await response.json()) as {assetId: string; uploadUrl: string};
+    onReservation(signed.assetId);
     await putWithProgress(signed.uploadUrl, body, file.contentType, onProgress);
     const completed = await fetch(
       `/api/projects/${projectId}/assets/upload-url`,
@@ -111,29 +158,39 @@ export default function ProjectPage({
       return;
     }
     setMessage('Preserving your pieces…');
+    let activeExtra: 'text' | 'audio' | null = null;
     try {
       for (const [index, draft] of images.entries()) {
         updateImage(index, {status: 'uploading'});
-        await upload(
-          draft.file,
-          {
-            kind: 'image',
-            name: draft.file.name,
-            contentType: draft.file.type,
-            size: draft.file.size,
-            caption: draft.caption,
-            capturedAtText: draft.capturedAtText,
-            knownPeople: draft.knownPeople
-              .split(',')
-              .map((person) => person.trim())
-              .filter(Boolean)
-          },
-          (progress) => updateImage(index, {progress})
-        );
-        updateImage(index, {status: 'ready', progress: 100});
+        try {
+          await upload(
+            draft.file,
+            {
+              kind: 'image',
+              name: draft.file.name,
+              contentType: draft.file.type,
+              size: draft.file.size,
+              reservationId: draft.reservationId,
+              caption: draft.caption,
+              capturedAtText: draft.capturedAtText,
+              knownPeople: draft.knownPeople
+                .split(',')
+                .map((person) => person.trim())
+                .filter(Boolean)
+            },
+            (progress) => updateImage(index, {progress}),
+            (reservationId) => updateImage(index, {reservationId})
+          );
+          updateImage(index, {status: 'ready', progress: 100});
+        } catch (error) {
+          updateImage(index, {status: 'failed'});
+          throw error;
+        }
       }
 
       if (supportingText.trim()) {
+        activeExtra = 'text';
+        setTextStatus((current) => ({...current, status: 'uploading'}));
         const text = new Blob([supportingText], {type: 'text/plain'});
         await upload(
           text,
@@ -141,25 +198,45 @@ export default function ProjectPage({
             kind: 'text',
             name: 'supporting-text.txt',
             contentType: 'text/plain',
-            size: text.size
+            size: text.size,
+            reservationId: textStatus.reservationId
           },
-          () => undefined
+          (progress) =>
+            setTextStatus((current) => ({...current, progress})),
+          (reservationId) =>
+            setTextStatus((current) => ({...current, reservationId}))
         );
+        setTextStatus((current) => ({...current, progress: 100, status: 'ready'}));
+        activeExtra = null;
       }
       if (sourceAudio) {
+        activeExtra = 'audio';
+        setAudioStatus((current) => ({...current, status: 'uploading'}));
         await upload(
           sourceAudio,
           {
-            kind: 'source-audio',
+            kind: 'source_audio',
             name: sourceAudio.name,
             contentType: sourceAudio.type,
-            size: sourceAudio.size
+            size: sourceAudio.size,
+            reservationId: audioStatus.reservationId
           },
-          () => undefined
+          (progress) =>
+            setAudioStatus((current) => ({...current, progress})),
+          (reservationId) =>
+            setAudioStatus((current) => ({...current, reservationId}))
         );
+        setAudioStatus((current) => ({...current, progress: 100, status: 'ready'}));
+        activeExtra = null;
       }
       setMessage('Your family pieces are safely gathered.');
     } catch {
+      if (activeExtra === 'text') {
+        setTextStatus((current) => ({...current, status: 'failed'}));
+      }
+      if (activeExtra === 'audio') {
+        setAudioStatus((current) => ({...current, status: 'failed'}));
+      }
       setMessage('One piece could not be preserved. Please try again.');
     }
   };
@@ -240,7 +317,13 @@ export default function ProjectPage({
             />
           </label>
           {supportingText && (
-            <pre aria-label="Supporting text preview">{supportingText}</pre>
+            <>
+              <pre aria-label="Supporting text preview">{supportingText}</pre>
+              <progress value={textStatus.progress} max={100}>
+                {textStatus.progress}%
+              </progress>
+              <span>{textStatus.status}</span>
+            </>
           )}
           <label>
             A short family recording (optional)
@@ -249,6 +332,14 @@ export default function ProjectPage({
               accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg"
               onChange={(event) => setSourceAudio(event.target.files?.[0] ?? null)}
             />
+            {sourceAudio && (
+              <>
+                <progress value={audioStatus.progress} max={100}>
+                  {audioStatus.progress}%
+                </progress>
+                <span>{audioStatus.status}</span>
+              </>
+            )}
           </label>
           <p role="status">{message}</p>
           <button type="submit">Preserve these pieces</button>
