@@ -45,6 +45,16 @@ describe('CloudTasksQueue', () => {
     await queue.enqueue({...base, provider: 'google_gemini'}); await queue.enqueue({...base, provider: 'another_provider'});
     const names = createTask.mock.calls.map(([request]) => request.task.name); expect(new Set(names).size).toBe(2); expect(names.every((name) => !name.includes('files/') && !name.includes('shared'))).toBe(true);
   });
+
+  it('uses the transcription job id as a deterministic safe queue identity', async () => {
+    const createTask = vi.fn().mockResolvedValue([{}]);
+    const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
+    const task = {type: 'transcribe_asset' as const, projectId: crypto.randomUUID(), assetId: crypto.randomUUID(), jobId: crypto.randomUUID()};
+    await queue.enqueue(task);
+    const name = createTask.mock.calls[0][0].task.name as string;
+    expect(name).toContain(task.jobId);
+    expect(name).not.toContain(task.assetId);
+  });
 });
 
 describe('verifyCloudTaskRequest', () => {

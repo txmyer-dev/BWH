@@ -25,7 +25,8 @@ const uploadFileSchema = z.object({
   reservationId: z.uuid().optional(),
   caption: z.string().max(2_000).optional(),
   capturedAtText: z.string().max(200).optional(),
-  knownPeople: z.array(z.string().max(120)).max(50).optional()
+  knownPeople: z.array(z.string().max(120)).max(50).optional(),
+  durationMs: z.number().int().positive().max(24 * 60 * 60 * 1_000).optional()
 });
 
 export const parseUploadFile = (input: unknown): UploadFile => {
@@ -78,4 +79,5 @@ export const validateFile = (file: UploadFile) => {
   if (file.size > MAX_AUDIO_BYTES) {
     throw new Error('FILE_TOO_LARGE');
   }
+  if (!file.durationMs) throw new Error('AUDIO_DURATION_REQUIRED');
 };

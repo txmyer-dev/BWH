@@ -10,6 +10,13 @@ export interface ExecuteProviderRunTask {
   providerRunId: string;
 }
 
+export interface TranscriptionTask {
+  type: 'transcribe_asset';
+  projectId: string;
+  assetId: string;
+  jobId: string;
+}
+
 export interface CleanupProviderArtifactTask {
   type: 'cleanup_provider_artifact';
   projectId: string;
@@ -18,7 +25,7 @@ export interface CleanupProviderArtifactTask {
   providerArtifactId: string;
 }
 
-export type QueuedTask = AnalysisTask | ExecuteProviderRunTask | CleanupProviderArtifactTask;
+export type QueuedTask = AnalysisTask | TranscriptionTask | ExecuteProviderRunTask | CleanupProviderArtifactTask;
 
 export interface TaskQueue {
   enqueue(task: QueuedTask): Promise<void>;

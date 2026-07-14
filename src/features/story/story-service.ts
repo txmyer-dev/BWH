@@ -19,6 +19,10 @@ export const filmSceneInputSchema = z.object({
   durationSeconds: z.number().positive().max(240),
   assetIds: z.array(z.string().uuid()),
   evidenceItemIds: z.array(z.string().uuid()),
+  authenticClip: z.object({
+    assetId: z.string().uuid(), evidenceItemId: z.string().uuid(),
+    startMs: z.number().int().nonnegative(), endMs: z.number().int().positive()
+  }).strict().nullable().optional(),
   motionPreset: motionPresetSchema,
   transitionPreset: transitionPresetSchema
 }).strict();
@@ -85,13 +89,20 @@ export interface StoryRepository {
 }
 
 type EvidenceReader = {listByProject(projectId: string): Promise<EvidenceItem[]>};
-export interface ProjectAssetReader {listReadyProjectAssetIds(projectId: string): Promise<string[]>;}
+export interface ProjectAssetReader {
+  listReadyProjectAssetIds(projectId: string): Promise<string[]>;
+  findReadyProjectAsset?(projectId: string, assetId: string): Promise<{id: string; projectId: string; kind: 'image'|'text'|'source_audio'|'creator_narration'; durationMs?: number|null} | undefined>;
+}
 export class RepositoryProjectAssetReader implements ProjectAssetReader {
   constructor(private readonly repository: Pick<AssetRepository, 'listByProject'>) {}
   async listReadyProjectAssetIds(projectId: string) {
     return (await this.repository.listByProject(projectId))
       .filter((asset) => asset.projectId === projectId && asset.processingStatus === 'ready')
       .map((asset) => asset.id);
+  }
+  async findReadyProjectAsset(projectId: string, assetId: string) {
+    const asset = (await this.repository.listByProject(projectId)).find((candidate) => candidate.id === assetId);
+    return asset?.projectId === projectId && asset.processingStatus === 'ready' ? asset : undefined;
   }
 }
 const isApproved = (item: EvidenceItem) => item.kind !== 'model_hypothesis' && (item.verificationStatus === 'confirmed' || item.verificationStatus === 'corrected');
@@ -169,6 +180,7 @@ export class StoryService {
     if (!board || board.id !== storyboardId) throw new Error('STORYBOARD_NOT_FOUND');
     const scenes = [...board.scenes, {...scene, id: randomUUID(), sequenceOrder: board.scenes.length}];
     await this.assertSceneEvidence(projectId, scene);
+    await this.assertAuthenticClip(projectId, scene);
     await this.assertSceneAssets(projectId, scenes);
     this.assertDuration(scenes);
     return this.repository.addScene(projectId, storyboardId, scene, expectedRevision);
@@ -184,11 +196,13 @@ export class StoryService {
       sceneType: current.sceneType, title: current.title, narrationText: current.narrationText,
       captionText: current.captionText, durationSeconds: current.durationSeconds,
       assetIds: current.assetIds, evidenceItemIds: current.evidenceItemIds,
+      authenticClip: current.authenticClip ?? null,
       motionPreset: current.motionPreset, transitionPreset: current.transitionPreset
     };
     const merged = filmSceneInputSchema.parse({...currentInput, ...change});
     const scenes = board.scenes.map((scene) => scene.id === sceneId ? {...merged, id: scene.id, sequenceOrder: scene.sequenceOrder} : scene);
     await this.assertSceneEvidence(projectId, merged);
+    await this.assertAuthenticClip(projectId, merged);
     await this.assertSceneAssets(projectId, scenes);
     this.assertDuration(scenes);
     return this.repository.editScene(projectId, storyboardId, sceneId, change, expectedRevision);
@@ -210,6 +224,7 @@ export class StoryService {
     const scene = storyboard.scenes.find((candidate) => candidate.id === sceneId);
     if (!scene) throw new Error('SCENE_NOT_FOUND');
     await this.assertSceneEvidence(projectId, scene);
+    await this.assertAuthenticClip(projectId, scene);
     await this.assertSceneAssets(projectId, storyboard.scenes);
     const approvedEvidence = await this.approvedEvidence(projectId);
     const regenerated = await this.agent.regenerateScene({
@@ -225,6 +240,7 @@ export class StoryService {
     const next = this.flattenAgentScene(regenerated, approvedEvidence);
     const scenes = storyboard.scenes.map((candidate) => candidate.id === sceneId ? {...next, id: candidate.id, sequenceOrder: candidate.sequenceOrder} : candidate);
     await this.assertSceneEvidence(projectId, next);
+    await this.assertAuthenticClip(projectId, next);
     await this.assertSceneAssets(projectId, scenes);
     this.assertDuration(scenes);
     return this.repository.replaceScene(projectId, storyboardId, sceneId, next, expectedRevision);
@@ -268,6 +284,20 @@ export class StoryService {
     if (scene.evidenceItemIds.some((id) => !allowed.has(id))) throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');
   }
 
+  private async assertAuthenticClip(projectId: string, scene: FilmSceneInput) {
+    const clip = scene.authenticClip;
+    if (scene.sceneType === 'original_audio' && !clip) throw new Error('AUTHENTIC_CLIP_REQUIRED');
+    if (!clip) return;
+    if (scene.sceneType !== 'original_audio' || !scene.assetIds.includes(clip.assetId) || clip.startMs >= clip.endMs) throw new Error('AUTHENTIC_CLIP_INVALID');
+    const all = await this.evidence.listByProject(projectId);
+    const source = all.find((item) => item.id === clip.evidenceItemId);
+    if (!source || source.projectId !== projectId || source.kind !== 'transcript' || !['confirmed', 'corrected'].includes(source.verificationStatus) || !source.sourceAssetIds.includes(clip.assetId)) {
+      throw new Error('AUTHENTIC_CLIP_EVIDENCE_REQUIRED');
+    }
+    const asset = await this.assets.findReadyProjectAsset?.(projectId, clip.assetId);
+    if (!asset || !['source_audio', 'creator_narration'].includes(asset.kind) || !asset.durationMs || clip.endMs > asset.durationMs) throw new Error('AUTHENTIC_CLIP_INVALID');
+  }
+
   private async assertSceneAssets(projectId: string, scenes: Pick<FilmSceneInput, 'assetIds'>[]) {
     const ready = new Set(await this.assets.listReadyProjectAssetIds(projectId));
     if (scenes.some((scene) => scene.assetIds.some((id) => !ready.has(id)))) throw new Error('INVALID_SCENE_ASSET');
@@ -282,7 +312,7 @@ export class StoryService {
 const cloneStoryboard = (storyboard: Storyboard): Storyboard => ({
   ...storyboard,
   voiceProfile: {...storyboard.voiceProfile, traits: storyboard.voiceProfile.traits.map((trait) => ({...trait, evidenceItemIds: [...trait.evidenceItemIds]}))},
-  scenes: storyboard.scenes.map((scene) => ({...scene, assetIds: [...scene.assetIds], evidenceItemIds: [...scene.evidenceItemIds]}))
+  scenes: storyboard.scenes.map((scene) => ({...scene, authenticClip: scene.authenticClip ? {...scene.authenticClip} : scene.authenticClip, assetIds: [...scene.assetIds], evidenceItemIds: [...scene.evidenceItemIds]}))
 });
 
 export class InMemoryStoryRepository implements StoryRepository {
@@ -348,6 +378,7 @@ const mapScene = (row: typeof filmScenes.$inferSelect): FilmScene => ({
   id: row.id, sequenceOrder: row.sequenceOrder, sceneType: row.sceneType as FilmScene['sceneType'],
   title: row.title ?? '', narrationText: row.narrationText ?? '', captionText: row.captionText ?? '',
   durationSeconds: row.durationSeconds, assetIds: row.assetIds as string[], evidenceItemIds: row.evidenceItemIds as string[],
+  authenticClip: row.authenticClip ? filmSceneInputSchema.shape.authenticClip.parse(row.authenticClip) : null,
   motionPreset: row.motionPreset as FilmScene['motionPreset'], transitionPreset: row.transitionPreset as FilmScene['transitionPreset']
 });
 

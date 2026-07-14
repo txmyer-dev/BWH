@@ -50,6 +50,13 @@
       "when": 1784067656386,
       "tag": "0006_provider_run_results",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784070139279,
+      "tag": "0007_asset_transcripts",
+      "breakpoints": true
     }
   ]
 }

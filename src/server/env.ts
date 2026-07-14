@@ -10,6 +10,7 @@ const schema = z.object({
   GEMINI_REQUIRE_PAID_PROJECT: z.stringbool().default(false),
   GEMINI_PAID_PROJECT_VERIFIED: z.stringbool().default(false),
   GEMINI_PAID_PROJECT_ID: z.string().min(1).optional(),
+  DEEPGRAM_API_KEY: z.string().min(1).optional(),
   AZURE_SPEECH_KEY: z.string().min(1).optional(),
   AZURE_SPEECH_REGION: z.string().min(1).optional(),
   GCP_PROJECT_ID: z.string().min(1),

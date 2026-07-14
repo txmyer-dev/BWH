@@ -1,4 +1,5 @@
 import {GoogleGenAI} from '@google/genai';
+import {DeepgramClient as DeepgramSdkClient} from '@deepgram/sdk';
 
 import {GeminiStoryAgent, PostgresProviderStructuredResultStore, geminiPricing, type GeminiClient, type ProviderStructuredResultStore} from '../../features/story/gemini-story-agent';
 import {PostgresConsentRepository} from '../../features/consent/consent-repository';
@@ -10,6 +11,7 @@ import {PostgresProviderRunRepository} from '../../features/providers/provider-r
 import {ProviderRunService} from '../../features/providers/provider-run-service';
 import type {ProviderExecutor} from '../../features/providers/types';
 import type {Database} from '../db/client';
+import {DeepgramTranscriber, type DeepgramClient, type DeepgramResponse} from '../../features/transcription/deepgram-transcriber';
 
 type ProviderEnvironment = {
   NODE_ENV: 'development'|'test'|'production';
@@ -19,6 +21,7 @@ type ProviderEnvironment = {
   GEMINI_REQUIRE_PAID_PROJECT: boolean;
   GEMINI_PAID_PROJECT_VERIFIED: boolean;
   GEMINI_PAID_PROJECT_ID?: string;
+  DEEPGRAM_API_KEY?: string;
   PROVIDER_FINGERPRINT_SECRET?: string;
   PROVIDER_DEFAULT_BUDGET_MICROS?: number;
   PROVIDER_DEFAULT_REQUEST_BUDGET?: number;
@@ -30,6 +33,7 @@ type ProviderDependencies = {
   database?: Database;
   resultStore?: ProviderStructuredResultStore;
   createGeminiClient?: (apiKey: string | undefined) => GeminiClient;
+  createDeepgramClient?: (apiKey: string) => DeepgramClient;
 };
 
 export const createProviderServices = (env: ProviderEnvironment, dependencies: ProviderDependencies) => {
@@ -59,5 +63,15 @@ export const createProviderServices = (env: ProviderEnvironment, dependencies: P
   if (!results) throw new Error('PROVIDER_RESULT_STORE_REQUIRED');
   const artifacts = dependencies.database ? new ProviderArtifactService(new PostgresProviderArtifactRepository(dependencies.database)) : undefined;
   const listReadyAssetIds = dependencies.database ? async (projectId: string) => (await new PostgresAssetRepository(dependencies.database!).listByProject(projectId)).filter((asset) => asset.projectId === projectId && asset.processingStatus === 'ready').map((asset) => asset.id) : undefined;
-  return {executor, storyAgent: new GeminiStoryAgent(client, {model: env.GEMINI_STORY_MODEL}, executor, results, artifacts, listReadyAssetIds)};
+  const deepgramClient = env.DEEPGRAM_API_KEY ? (dependencies.createDeepgramClient ?? ((key: string): DeepgramClient => {
+    const sdk = new DeepgramSdkClient({apiKey: key, maxRetries: 0});
+    return {listen: {prerecorded: {transcribeFile: async (bytes, options, requestOptions) => ({
+      result: await sdk.listen.v1.media.transcribeFile(bytes, options as never, requestOptions) as unknown as DeepgramResponse['result'], error: null
+    })}}};
+  }))(env.DEEPGRAM_API_KEY) : undefined;
+  return {
+    executor,
+    storyAgent: new GeminiStoryAgent(client, {model: env.GEMINI_STORY_MODEL}, executor, results, artifacts, listReadyAssetIds),
+    deepgramTranscriber: deepgramClient ? new DeepgramTranscriber(deepgramClient) : undefined
+  };
 };

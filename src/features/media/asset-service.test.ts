@@ -213,8 +213,8 @@ describe('AssetService upload policy', () => {
 
   it.each([
     {kind: 'text' as const, name: 'supporting.txt', contentType: 'text/plain', size: 100},
-    {kind: 'source_audio' as const, name: 'memory.mp3', contentType: 'audio/mpeg', size: 1_000},
-    {kind: 'creator_narration' as const, name: 'narration.wav', contentType: 'audio/wav', size: 1_000}
+    {kind: 'source_audio' as const, name: 'memory.mp3', contentType: 'audio/mpeg', size: 1_000, durationMs: 1_000},
+    {kind: 'creator_narration' as const, name: 'narration.wav', contentType: 'audio/wav', size: 1_000, durationMs: 1_000}
   ])('allows only one $kind asset', async (file) => {
     const context = await setup();
     await context.service.requestUpload(
@@ -251,6 +251,13 @@ describe('AssetService upload policy', () => {
     ).rejects.toThrow('FILE_TOO_LARGE');
   });
 
+  it('requires a bounded audio duration for cost reservation and clip bounds', async () => {
+    const context = await setup();
+    await expect(context.service.requestUpload(context.project.projectId, context.project.ownerToken, {
+      kind: 'source_audio', name: 'memory.mp3', contentType: 'audio/mpeg', size: 1_000
+    })).rejects.toThrow('AUDIO_DURATION_REQUIRED');
+  });
+
   it('rejects unknown runtime asset kinds instead of treating them as audio', async () => {
     const context = await setup();
     await expect(
@@ -274,7 +281,7 @@ describe('AssetService upload policy', () => {
         context.service.requestUpload(
           context.project.projectId,
           context.project.ownerToken,
-          {kind, name: `${kind}.wav`, contentType: 'audio/wav', size: 100} as unknown as UploadFile
+          {kind, name: `${kind}.wav`, contentType: 'audio/wav', size: 100, durationMs: 1_000} as unknown as UploadFile
         )
       ).resolves.toEqual(expect.objectContaining({assetId: expect.any(String)}));
     }
@@ -302,6 +309,13 @@ describe('AssetService upload policy', () => {
         {...file, name: 'different.txt', reservationId: first.assetId} as UploadFile
       )
     ).rejects.toThrow('UPLOAD_RESERVATION_MISMATCH');
+  });
+
+  it('does not let an audio retry replace the reserved duration metadata', async () => {
+    const context = await setup();
+    const file = {kind: 'source_audio' as const, name: 'memory.wav', contentType: 'audio/wav', size: 100, durationMs: 1_000};
+    const first = await context.service.requestUpload(context.project.projectId, context.project.ownerToken, file);
+    await expect(context.service.requestUpload(context.project.projectId, context.project.ownerToken, {...file, durationMs: 2_000, reservationId: first.assetId})).rejects.toThrow('UPLOAD_RESERVATION_MISMATCH');
   });
 
   it('never reopens a completed original reservation for writing', async () => {

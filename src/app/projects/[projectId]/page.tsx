@@ -14,6 +14,7 @@ import {
   type UploadStatus
 } from '@/features/media/upload-ui-state';
 import type {EvidenceItem} from '@/features/evidence/schemas';
+import {durationSecondsToMs} from '@/features/media/audio-duration';
 import type {Question, Storyboard} from '@/features/story/story-service';
 import {
   displayEvidenceClaim,
@@ -144,6 +145,7 @@ export default function ProjectPage({
       capturedAtText?: string;
       knownPeople?: string[];
       reservationId?: string;
+      durationMs?: number;
     },
     onProgress: (progress: number) => void,
     onReservation: (assetId: string) => void
@@ -181,6 +183,18 @@ export default function ProjectPage({
     );
     if (!completed.ok) throw new Error('UPLOAD_FAILED');
   };
+
+  const readAudioDurationMs = (file: File) => new Promise<number>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    const release = () => { URL.revokeObjectURL(url); audio.removeAttribute('src'); };
+    audio.onloadedmetadata = () => {
+      try { const duration = durationSecondsToMs(audio.duration); release(); resolve(duration); }
+      catch (error) { release(); reject(error); }
+    };
+    audio.onerror = () => { release(); reject(new Error('AUDIO_DURATION_INVALID')); };
+    audio.src = url;
+  });
 
   const gather = async (event: FormEvent) => {
     event.preventDefault();
@@ -243,6 +257,7 @@ export default function ProjectPage({
       if (sourceAudio) {
         activeExtra = 'audio';
         setAudioStatus((current) => ({...current, status: 'uploading'}));
+        const durationMs = await readAudioDurationMs(sourceAudio);
         await upload(
           sourceAudio,
           {
@@ -250,6 +265,7 @@ export default function ProjectPage({
             name: sourceAudio.name,
             contentType: sourceAudio.type,
             size: sourceAudio.size,
+            durationMs,
             reservationId: audioStatus.reservationId
           },
           (progress) =>

@@ -34,4 +34,12 @@ describe('createProviderServices', () => {
   it('fails closed for an unpriced configured Gemini model', () => {
     expect(() => createProviderServices({...env, GEMINI_STORY_MODEL: 'gemini-future'}, deps as never)).toThrow('GEMINI_MODEL_PRICING_UNKNOWN');
   });
+
+  it('constructs Deepgram transcription only when explicitly configured', () => {
+    const createDeepgramClient = vi.fn(() => ({listen: {prerecorded: {transcribeFile: vi.fn()}}}));
+    const configured = createProviderServices({...env, DEEPGRAM_API_KEY: 'deepgram-secret'}, {...deps, createDeepgramClient} as never);
+    expect(configured.deepgramTranscriber).toBeTruthy();
+    expect(createDeepgramClient).toHaveBeenCalledWith('deepgram-secret');
+    expect(createProviderServices(env, deps as never).deepgramTranscriber).toBeUndefined();
+  });
 });

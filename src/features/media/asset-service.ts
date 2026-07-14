@@ -19,6 +19,7 @@ export interface UploadFile {
   caption?: string;
   capturedAtText?: string;
   knownPeople?: string[];
+  durationMs?: number;
 }
 
 export interface Asset {
@@ -36,6 +37,7 @@ export interface Asset {
   knownPeople: string[];
   sequenceOrder: number;
   transcript?: string | null;
+  durationMs?: number | null;
 }
 
 type NewReservation = Omit<
@@ -67,6 +69,7 @@ const mapRow = (row: typeof assets.$inferSelect): Asset => {
     knownPeople?: string[];
     originalName?: string;
     transcript?: string;
+    durationMs?: number;
   };
   return {
     id: row.id,
@@ -87,7 +90,8 @@ const mapRow = (row: typeof assets.$inferSelect): Asset => {
     capturedAtText: row.capturedAtText,
     knownPeople: Array.isArray(metadata.knownPeople) ? metadata.knownPeople : [],
     sequenceOrder: row.sequenceOrder,
-    transcript: typeof metadata.transcript === 'string' ? metadata.transcript : null
+    transcript: typeof metadata.transcript === 'string' ? metadata.transcript : null,
+    durationMs: typeof metadata.durationMs === 'number' ? metadata.durationMs : null
   };
 };
 
@@ -96,7 +100,8 @@ const reservationMatches = (asset: Asset, reservation: NewReservation) =>
   asset.kind === reservation.kind &&
   asset.originalName === reservation.originalName &&
   asset.mimeType === reservation.mimeType &&
-  asset.size === reservation.size;
+  asset.size === reservation.size &&
+  asset.durationMs === reservation.durationMs;
 
 const allocateSequence = (kind: AssetKind, existing: Asset[]) => {
   if (kind !== 'image') {
@@ -240,7 +245,8 @@ export class PostgresAssetRepository implements AssetRepository {
             originalName: reservation.originalName,
             size: reservation.size,
             knownPeople: reservation.knownPeople,
-            transcript: reservation.transcript
+            transcript: reservation.transcript,
+            durationMs: reservation.durationMs
           }
         })
         .returning();
@@ -284,6 +290,7 @@ export class PostgresAssetRepository implements AssetRepository {
           kind: existing.kind,
           knownPeople: existing.knownPeople,
           transcript: existing.transcript,
+          durationMs: existing.durationMs,
           size: metadata.size
         },
         updatedAt: new Date()
@@ -480,7 +487,8 @@ export class AssetService {
         knownPeople:
           validatedFile.knownPeople
             ?.map((person) => person.trim())
-            .filter(Boolean) ?? []
+            .filter(Boolean) ?? [],
+        durationMs: validatedFile.durationMs ?? null
       },
       validatedFile.reservationId,
       now

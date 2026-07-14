@@ -222,6 +222,7 @@ export const filmScenes = pgTable('film_scenes', {
   sequenceOrder: integer('sequence_order').notNull(),
   assetIds: jsonb('asset_ids').default([]).notNull(),
   evidenceItemIds: jsonb('evidence_item_ids').default([]).notNull(),
+  authenticClip: jsonb('authentic_clip'),
   generatedNarrationObjectKey: text('generated_narration_object_key'),
   motionPreset: varchar('motion_preset', {length: 40}).notNull(),
   transitionPreset: varchar('transition_preset', {length: 40}).notNull(),
@@ -246,7 +247,10 @@ export const processingJobs = pgTable(
   (table) => [
     uniqueIndex('processing_jobs_active_analysis_unique')
       .on(table.projectId, table.jobType)
-      .where(sql`${table.status} IN ('pending', 'processing')`)
+      .where(sql`${table.jobType} = 'analyze_collection' AND ${table.status} IN ('pending', 'processing')`),
+    uniqueIndex('processing_jobs_active_transcription_asset_unique')
+      .on(table.projectId, table.assetId, table.jobType)
+      .where(sql`${table.jobType} = 'transcribe_asset' AND ${table.status} IN ('pending', 'processing')`)
   ]
 );
 
@@ -307,6 +311,25 @@ export const providerRunResults = pgTable('provider_run_results', {
   structuredResult: jsonb('structured_result').notNull(),
   createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
 }, (table) => [index('provider_run_results_project_idx').on(table.projectId)]);
+
+export const assetTranscripts = pgTable('asset_transcripts', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  assetId: uuid('asset_id').notNull().references(() => assets.id, {onDelete: 'cascade'}),
+  providerRunId: uuid('provider_run_id').notNull().references(() => providerRuns.id, {onDelete: 'cascade'}),
+  text: text('text').notNull(),
+  language: varchar('language', {length: 40}),
+  confidence: real('confidence'),
+  durationMs: integer('duration_ms').notNull(),
+  segments: jsonb('segments').notNull(),
+  createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
+}, (table) => [
+  uniqueIndex('asset_transcripts_asset_unique').on(table.assetId),
+  uniqueIndex('asset_transcripts_provider_run_unique').on(table.providerRunId),
+  index('asset_transcripts_project_idx').on(table.projectId),
+  check('asset_transcripts_duration_positive_check', sql`${table.durationMs} > 0`),
+  check('asset_transcripts_confidence_check', sql`${table.confidence} IS NULL OR (${table.confidence} >= 0 AND ${table.confidence} <= 1)`)
+]);
 
 export const providerArtifacts = pgTable('provider_artifacts', {
   id: uuid('id').primaryKey(),

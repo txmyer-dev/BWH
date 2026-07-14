@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@deepgram/sdk": "^5.5.0",
     "@google-cloud/run": "3.3.0",
     "@google-cloud/storage": "7.21.0",
     "@google-cloud/tasks": "6.2.3",

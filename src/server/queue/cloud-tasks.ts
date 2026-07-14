@@ -17,7 +17,7 @@ export class CloudTasksQueue implements TaskQueue {
   constructor(private readonly client: CloudTasksClientLike, private readonly config: CloudTasksConfig) {}
 
   async enqueue(task: QueuedTask) {
-    const taskName = task.type === 'analyze_collection'
+    const taskName = task.type === 'analyze_collection' || task.type === 'transcribe_asset'
       ? `analysis-${task.jobId}`
       : task.type === 'execute_provider_run'
         ? `provider-${task.type}-${task.providerRunId}`

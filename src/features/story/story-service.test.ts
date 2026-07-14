@@ -14,6 +14,9 @@ const assetId = crypto.randomUUID();
 class MutableProjectAssets {
   constructor(public readyIds = new Set([assetId])) {}
   async listReadyProjectAssetIds() { return [...this.readyIds]; }
+  async findReadyProjectAsset(project: string, id: string) {
+    return project === projectId && this.readyIds.has(id) ? {id, projectId, kind: 'source_audio' as const, durationMs: 10_000} : undefined;
+  }
 }
 
 const approved = (overrides: Partial<EvidenceItem> = {}): EvidenceItem => ({
@@ -191,6 +194,29 @@ describe('StoryService guardrails', () => {
       assetIds: [unlinkedReadyPhoto], evidenceItemIds: [], motionPreset: 'hold', transitionPreset: 'crossfade'
     }, storyboard.revision);
     expect(added.scene.assetIds).toEqual([unlinkedReadyPhoto]);
+  });
+
+  it('places authentic audio only with same-asset approved transcript evidence and bounded timestamps', async () => {
+    const transcript = approved({kind: 'transcript', sourceAssetIds: [assetId], verificationStatus: 'corrected', correction: 'Corrected memory.'});
+    const {service} = createService([transcript]);
+    const storyboard = await service.composeStoryboard(projectId);
+    const authenticClip = {assetId, evidenceItemId: transcript.id, startMs: 1000, endMs: 9000};
+    const edited = await service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {sceneType: 'original_audio', authenticClip}, storyboard.revision);
+    expect(edited.scenes[0].authenticClip).toEqual(authenticClip);
+    await expect(service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {
+      sceneType: 'original_audio', authenticClip: {...authenticClip, endMs: 10_001}
+    }, edited.revision)).rejects.toThrow('AUTHENTIC_CLIP_INVALID');
+  });
+
+  it('rejects proposed or cross-asset transcript evidence for authentic clips', async () => {
+    const transcript = approved({kind: 'transcript', sourceAssetIds: [crypto.randomUUID()], verificationStatus: 'proposed'});
+    const {service} = createService([transcript]);
+    await expect(service.composeStoryboard(projectId)).rejects.toThrow('APPROVED_EVIDENCE_REQUIRED');
+    const fact = approved(); const composed = createService([fact, transcript]);
+    const storyboard = await composed.service.composeStoryboard(projectId);
+    await expect(composed.service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {
+      sceneType: 'original_audio', authenticClip: {assetId, evidenceItemId: transcript.id, startMs: 0, endMs: 1000}
+    }, storyboard.revision)).rejects.toThrow('AUTHENTIC_CLIP_EVIDENCE_REQUIRED');
   });
 
   it.each([
