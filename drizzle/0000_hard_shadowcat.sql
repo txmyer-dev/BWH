@@ -155,4 +155,4 @@ CREATE UNIQUE INDEX "assets_original_object_key_unique" ON "assets" USING btree 
 CREATE UNIQUE INDEX "storyboards_project_id_unique" ON "storyboards" USING btree ("project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "subjects_project_id_unique" ON "subjects" USING btree ("project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "voice_profiles_project_id_unique" ON "voice_profiles" USING btree ("project_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "processing_jobs_active_analysis_unique" ON "processing_jobs" USING btree ("project_id","job_type") WHERE "processing_jobs"."status" IN ('pending', 'processing', 'failed');
+CREATE UNIQUE INDEX "processing_jobs_active_analysis_unique" ON "processing_jobs" USING btree ("project_id","job_type") WHERE "processing_jobs"."status" IN ('pending', 'processing');

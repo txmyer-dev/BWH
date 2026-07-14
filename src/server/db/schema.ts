@@ -210,6 +210,6 @@ export const processingJobs = pgTable(
   (table) => [
     uniqueIndex('processing_jobs_active_analysis_unique')
       .on(table.projectId, table.jobType)
-      .where(sql`${table.status} IN ('pending', 'processing', 'failed')`)
+      .where(sql`${table.status} IN ('pending', 'processing')`)
   ]
 );

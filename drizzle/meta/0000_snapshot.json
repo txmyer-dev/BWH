@@ -668,7 +668,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"processing_jobs\".\"status\" IN ('pending', 'processing', 'failed')",
+          "where": "\"processing_jobs\".\"status\" IN ('pending', 'processing')",
           "concurrently": false,
           "method": "btree",
           "with": {}

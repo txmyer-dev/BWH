@@ -53,7 +53,7 @@ export class PostgresEvidenceRepository implements EvidenceRepository {
 
   async findActiveAnalysisJob(projectId: string) {
     const row = await this.database.query.processingJobs.findFirst({
-      where: (table, {and: all, eq: equals, inArray: inList}) => all(equals(table.projectId, projectId), equals(table.jobType, 'analyze_collection'), inList(table.status, ['pending', 'processing', 'failed']))
+      where: (table, {and: all, eq: equals, inArray: inList}) => all(equals(table.projectId, projectId), equals(table.jobType, 'analyze_collection'), inList(table.status, ['pending', 'processing']))
     });
     return row ? mapJob(row) : undefined;
   }
@@ -129,9 +129,9 @@ export class InMemoryEvidenceRepository implements EvidenceRepository {
   private readonly evidence = new Map<string, EvidenceItem>();
   private readonly jobs = new Map<string, AnalysisJob>();
 
-  async findActiveAnalysisJob(projectId: string) { return [...this.jobs.values()].find((job) => job.projectId === projectId && ['pending', 'processing', 'failed'].includes(job.status)); }
+  async findActiveAnalysisJob(projectId: string) { return [...this.jobs.values()].find((job) => job.projectId === projectId && ['pending', 'processing'].includes(job.status)); }
   async createAnalysisJob(projectId: string) {
-    const active = await this.findActiveAnalysisJob(projectId);
+    const active = [...this.jobs.values()].find((job) => job.projectId === projectId && ['pending', 'processing'].includes(job.status));
     if (active) return {...active};
     const job: AnalysisJob = {id: randomUUID(), projectId, status: 'pending', attemptCount: 0, processingStartedAt: null, leaseExpiresAt: null, leaseToken: null};
     this.jobs.set(job.id, job); return {...job};
@@ -168,4 +168,5 @@ export class InMemoryEvidenceRepository implements EvidenceRepository {
     this.evidence.set(id, reviewed); return {...reviewed, sourceAssetIds: [...reviewed.sourceAssetIds]};
   }
   async listByProject(projectId: string) { return [...this.evidence.values()].filter((item) => item.projectId === projectId).map((item) => ({...item, sourceAssetIds: [...item.sourceAssetIds]})); }
+  allJobsForProject(projectId: string) { return [...this.jobs.values()].filter((job) => job.projectId === projectId).map((job) => ({...job})); }
 }

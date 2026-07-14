@@ -81,6 +81,52 @@ describe('EvidenceService', () => {
     expect(await context.repository.listByProject(projectId)).toHaveLength(1);
   });
 
+  it('retains a failed job for audit but creates and enqueues a fresh job on explicit retry', async () => {
+    const context = setup();
+    context.agent.analyzeCollection.mockRejectedValueOnce(new Error('PERMANENT_ANALYSIS_FAILURE'));
+    const failed = await context.service.requestAnalysis(projectId);
+    await expect(context.service.processAnalysis({projectId, jobId: failed.jobId})).rejects.toThrow('PERMANENT_ANALYSIS_FAILURE');
+
+    const retried = await context.service.requestAnalysis(projectId);
+    expect(retried.jobId).not.toBe(failed.jobId);
+    expect(context.queue.tasks).toEqual([
+      {type: 'analyze_collection', projectId, jobId: failed.jobId},
+      {type: 'analyze_collection', projectId, jobId: retried.jobId}
+    ]);
+    expect(context.repository.allJobsForProject(projectId)).toEqual([
+      expect.objectContaining({id: failed.jobId, status: 'failed'}),
+      expect.objectContaining({id: retried.jobId, status: 'pending'})
+    ]);
+  });
+
+  it('creates at most one fresh active job when failed-job retries race', async () => {
+    const context = setup();
+    context.agent.analyzeCollection.mockRejectedValueOnce(new Error('PERMANENT_ANALYSIS_FAILURE'));
+    const failed = await context.service.requestAnalysis(projectId);
+    await expect(context.service.processAnalysis({projectId, jobId: failed.jobId})).rejects.toThrow();
+
+    const [left, right] = await Promise.all([
+      context.service.requestAnalysis(projectId),
+      context.service.requestAnalysis(projectId)
+    ]);
+    expect(left.jobId).toBe(right.jobId);
+    expect(left.jobId).not.toBe(failed.jobId);
+    expect(context.repository.allJobsForProject(projectId).filter((job) => ['pending', 'processing'].includes(job.status))).toHaveLength(1);
+  });
+
+  it('keeps completed delivery idempotent and starts a new job only on an explicit analysis request', async () => {
+    const context = setup();
+    const completed = await context.service.requestAnalysis(projectId);
+    await context.service.processAnalysis({projectId, jobId: completed.jobId});
+    await expect(context.service.processAnalysis({projectId, jobId: completed.jobId})).resolves.toBeUndefined();
+    const next = await context.service.requestAnalysis(projectId);
+    expect(next.jobId).not.toBe(completed.jobId);
+    expect(context.repository.allJobsForProject(projectId)).toEqual([
+      expect.objectContaining({id: completed.jobId, status: 'completed'}),
+      expect.objectContaining({id: next.jobId, status: 'pending'})
+    ]);
+  });
+
   it('reclaims a crashed processing lease after timeout and excludes concurrent claims', async () => {
     let now = new Date('2026-07-14T12:00:00Z');
     const context = setup(true, new InlineQueue(), () => now);
