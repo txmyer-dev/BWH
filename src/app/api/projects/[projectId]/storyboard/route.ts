@@ -4,10 +4,11 @@ import OpenAI from 'openai';
 import {z} from 'zod';
 
 import {PostgresEvidenceRepository} from '@/features/evidence/evidence-repository';
+import {PostgresAssetRepository} from '@/features/media/asset-service';
 import {PostgresProjectRepository} from '@/features/projects/project-repository';
 import {ProjectService} from '@/features/projects/project-service';
 import {OpenAIStoryAgent} from '@/features/story/openai-story-agent';
-import {filmSceneInputSchema, PostgresStoryRepository, StoryService} from '@/features/story/story-service';
+import {filmSceneInputSchema, PostgresStoryRepository, RepositoryProjectAssetReader, StoryService} from '@/features/story/story-service';
 import {getDatabase} from '@/server/db/client';
 import {parseEnv} from '@/server/env';
 import {storyboardErrorStatus} from './response-status';
@@ -31,6 +32,7 @@ const createService = async (projectId: string) => {
     new PostgresStoryRepository(database),
     new OpenAIStoryAgent(new OpenAI({apiKey: parseEnv(process.env).OPENAI_API_KEY})),
     new PostgresEvidenceRepository(database),
+    new RepositoryProjectAssetReader(new PostgresAssetRepository(database)),
     (id) => projects.assertProjectOwner(id, token)
   );
 };

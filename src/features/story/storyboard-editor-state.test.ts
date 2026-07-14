@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 
 import type {EvidenceItem} from '../evidence/schemas';
+import type {Asset} from '../media/asset-service';
 import {
   buildStoryboardOptions,
   displayEvidenceClaim,
@@ -10,7 +11,7 @@ import {
   shouldClearRequestDirty,
   serializeSceneEdit
 } from './storyboard-editor-state';
-import type {FilmScene, Storyboard} from './story-service';
+import {RepositoryProjectAssetReader, type FilmScene, type Storyboard} from './story-service';
 
 const scene = (id: string, title: string): FilmScene => ({
   id, sequenceOrder: 0, sceneType: 'media', title, narrationText: 'Narration.', captionText: 'Caption',
@@ -112,5 +113,36 @@ describe('storyboard editor state', () => {
     expect(JSON.stringify(options)).not.toContain('foreign');
     expect(JSON.stringify(options)).not.toContain('Maybe');
     expect(JSON.stringify(options)).not.toContain('Perhaps');
+  });
+
+  it('offers exactly the project assets that the server asset reader accepts', async () => {
+    const projectId = crypto.randomUUID();
+    const asset = (id: string, owner: string, processingStatus: Asset['processingStatus']): Asset => ({
+      id,
+      projectId: owner,
+      kind: 'image',
+      originalName: `${id}.jpg`,
+      mimeType: 'image/jpeg',
+      originalObjectKey: `assets/${id}`,
+      processingStatus,
+      reservationExpiresAt: null,
+      size: 1,
+      caption: id,
+      capturedAtText: null,
+      knownPeople: [],
+      sequenceOrder: 0,
+      transcript: null
+    });
+    const assets = [
+      asset('ready-project', projectId, 'ready'),
+      asset('pending-project', projectId, 'pending'),
+      asset('ready-foreign', crypto.randomUUID(), 'ready')
+    ];
+    const selectableIds = buildStoryboardOptions(projectId, assets, []).assets.map(({id}) => id);
+    const acceptedIds = await new RepositoryProjectAssetReader({listByProject: async () => assets})
+      .listReadyProjectAssetIds(projectId);
+
+    expect(selectableIds).toEqual(['ready-project']);
+    expect(acceptedIds).toEqual(selectableIds);
   });
 });

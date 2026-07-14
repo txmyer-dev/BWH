@@ -5,6 +5,7 @@ import {z} from 'zod';
 import type {Database} from '../../server/db/client';
 import {evidenceItems, filmScenes, interviewAnswers, interviewQuestions, storyboards, voiceProfiles} from '../../server/db/schema';
 import type {EvidenceItem} from '../evidence/schemas';
+import type {AssetRepository} from '../media/asset-service';
 
 export const motionPresetSchema = z.enum(['hold', 'slow_zoom_in', 'slow_pan_left', 'slow_pan_right']);
 export const transitionPresetSchema = z.enum(['crossfade', 'fade_to_black']);
@@ -84,6 +85,15 @@ export interface StoryRepository {
 }
 
 type EvidenceReader = {listByProject(projectId: string): Promise<EvidenceItem[]>};
+export interface ProjectAssetReader {listReadyProjectAssetIds(projectId: string): Promise<string[]>;}
+export class RepositoryProjectAssetReader implements ProjectAssetReader {
+  constructor(private readonly repository: Pick<AssetRepository, 'listByProject'>) {}
+  async listReadyProjectAssetIds(projectId: string) {
+    return (await this.repository.listByProject(projectId))
+      .filter((asset) => asset.projectId === projectId && asset.processingStatus === 'ready')
+      .map((asset) => asset.id);
+  }
+}
 const isApproved = (item: EvidenceItem) => item.kind !== 'model_hypothesis' && (item.verificationStatus === 'confirmed' || item.verificationStatus === 'corrected');
 export const effectiveEvidenceClaim = (item: EvidenceItem) => {
   if (item.verificationStatus !== 'corrected') return item.claim;
@@ -101,6 +111,7 @@ export class StoryService {
     private readonly repository: StoryRepository,
     private readonly agent: StoryGuideAgent,
     private readonly evidence: EvidenceReader,
+    private readonly assets: ProjectAssetReader,
     private readonly assertCreator: (projectId: string) => Promise<void>
   ) {}
 
@@ -122,12 +133,16 @@ export class StoryService {
   async composeStoryboard(projectId: string) {
     await this.assertCreator(projectId);
     const existing = await this.repository.findStoryboard(projectId);
-    if (existing) return existing;
+    if (existing) {
+      await this.assertSceneAssets(projectId, existing.scenes);
+      return existing;
+    }
     const approvedEvidence = await this.approvedEvidence(projectId);
     if (!approvedEvidence.length) throw new Error('APPROVED_EVIDENCE_REQUIRED');
     const draft = await this.agent.composeStoryboard({projectId, approvedEvidence});
     const voiceProfile = this.validateVoiceProfile(draft.voiceProfile, approvedEvidence);
     const scenes = draft.scenes.map((scene) => this.flattenAgentScene(scene, approvedEvidence));
+    await this.assertSceneAssets(projectId, scenes);
     const duration = scenes.reduce((total, scene) => total + scene.durationSeconds, 0);
     if (duration < 120 || duration > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
     return this.repository.createStoryboard(projectId, {
@@ -152,8 +167,10 @@ export class StoryService {
     const scene = filmSceneInputSchema.parse(input);
     const board = await this.repository.findStoryboard(projectId);
     if (!board || board.id !== storyboardId) throw new Error('STORYBOARD_NOT_FOUND');
-    await this.assertSceneReferences(projectId, scene);
-    this.assertDuration([...board.scenes, {...scene, id: randomUUID(), sequenceOrder: board.scenes.length}]);
+    const scenes = [...board.scenes, {...scene, id: randomUUID(), sequenceOrder: board.scenes.length}];
+    await this.assertSceneEvidence(projectId, scene);
+    await this.assertSceneAssets(projectId, scenes);
+    this.assertDuration(scenes);
     return this.repository.addScene(projectId, storyboardId, scene, expectedRevision);
   }
 
@@ -170,13 +187,18 @@ export class StoryService {
       motionPreset: current.motionPreset, transitionPreset: current.transitionPreset
     };
     const merged = filmSceneInputSchema.parse({...currentInput, ...change});
-    await this.assertSceneReferences(projectId, merged);
-    this.assertDuration(board.scenes.map((scene) => scene.id === sceneId ? {...merged, id: scene.id, sequenceOrder: scene.sequenceOrder} : scene));
+    const scenes = board.scenes.map((scene) => scene.id === sceneId ? {...merged, id: scene.id, sequenceOrder: scene.sequenceOrder} : scene);
+    await this.assertSceneEvidence(projectId, merged);
+    await this.assertSceneAssets(projectId, scenes);
+    this.assertDuration(scenes);
     return this.repository.editScene(projectId, storyboardId, sceneId, change, expectedRevision);
   }
 
   async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[], expectedRevision: number) {
     await this.assertCreator(projectId);
+    const board = await this.repository.findStoryboard(projectId);
+    if (!board || board.id !== storyboardId) throw new Error('STORYBOARD_NOT_FOUND');
+    await this.assertSceneAssets(projectId, board.scenes);
     return this.repository.reorderScenes(projectId, storyboardId, orderedSceneIds, expectedRevision);
   }
 
@@ -187,6 +209,8 @@ export class StoryService {
     if (storyboard.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
     const scene = storyboard.scenes.find((candidate) => candidate.id === sceneId);
     if (!scene) throw new Error('SCENE_NOT_FOUND');
+    await this.assertSceneEvidence(projectId, scene);
+    await this.assertSceneAssets(projectId, storyboard.scenes);
     const approvedEvidence = await this.approvedEvidence(projectId);
     const regenerated = await this.agent.regenerateScene({
       projectId,
@@ -199,8 +223,10 @@ export class StoryService {
       approvedEvidence
     });
     const next = this.flattenAgentScene(regenerated, approvedEvidence);
-    await this.assertSceneReferences(projectId, next);
-    this.assertDuration(storyboard.scenes.map((candidate) => candidate.id === sceneId ? {...next, id: candidate.id, sequenceOrder: candidate.sequenceOrder} : candidate));
+    const scenes = storyboard.scenes.map((candidate) => candidate.id === sceneId ? {...next, id: candidate.id, sequenceOrder: candidate.sequenceOrder} : candidate);
+    await this.assertSceneEvidence(projectId, next);
+    await this.assertSceneAssets(projectId, scenes);
+    this.assertDuration(scenes);
     return this.repository.replaceScene(projectId, storyboardId, sceneId, next, expectedRevision);
   }
 
@@ -222,8 +248,6 @@ export class StoryService {
 
   private flattenAgentScene(scene: AgentScene, approved: StoryEvidence[]): FilmSceneInput {
     const approvedIds = new Set(approved.map((item) => item.id));
-    const allowedAssets = new Set(approved.flatMap((item) => item.sourceAssetIds));
-    if (scene.assetIds.some((id) => !allowedAssets.has(id))) throw new Error('CROSS_PROJECT_ASSET');
     for (const sentence of scene.narrationSentences) {
       if (!sentence.text.trim() || !sentence.evidenceItemIds.length || sentence.evidenceItemIds.some((id) => !approvedIds.has(id))) {
         throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');
@@ -237,13 +261,16 @@ export class StoryService {
     });
   }
 
-  private async assertSceneReferences(projectId: string, scene: FilmSceneInput) {
+  private async assertSceneEvidence(projectId: string, scene: FilmSceneInput) {
     if (scene.narrationText.trim() && !scene.evidenceItemIds.length) throw new Error('NARRATION_EVIDENCE_REQUIRED');
     const approved = await this.approvedEvidence(projectId);
     const allowed = new Set(approved.map((item) => item.id));
     if (scene.evidenceItemIds.some((id) => !allowed.has(id))) throw new Error('UNAPPROVED_EVIDENCE_REFERENCE');
-    const assets = new Set(approved.flatMap((item) => item.sourceAssetIds));
-    if (scene.assetIds.some((id) => !assets.has(id))) throw new Error('CROSS_PROJECT_ASSET');
+  }
+
+  private async assertSceneAssets(projectId: string, scenes: Pick<FilmSceneInput, 'assetIds'>[]) {
+    const ready = new Set(await this.assets.listReadyProjectAssetIds(projectId));
+    if (scenes.some((scene) => scene.assetIds.some((id) => !ready.has(id)))) throw new Error('INVALID_SCENE_ASSET');
   }
 
   private assertDuration(scenes: Pick<FilmScene, 'durationSeconds'>[]) {
