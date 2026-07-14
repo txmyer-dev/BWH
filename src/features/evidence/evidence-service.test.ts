@@ -99,6 +99,38 @@ describe('EvidenceService', () => {
     ]);
   });
 
+  it('never lets an old failed delivery process before or after its fresh replacement', async () => {
+    const context = setup();
+    context.agent.analyzeCollection.mockRejectedValueOnce(new Error('PERMANENT_ANALYSIS_FAILURE'));
+    const failed = await context.service.requestAnalysis(projectId);
+    await expect(context.service.processAnalysis({projectId, jobId: failed.jobId})).rejects.toThrow('PERMANENT_ANALYSIS_FAILURE');
+    const replacement = await context.service.requestAnalysis(projectId);
+
+    await expect(context.service.processAnalysis({projectId, jobId: failed.jobId})).resolves.toBeUndefined();
+    await context.service.processAnalysis({projectId, jobId: replacement.jobId});
+    await expect(context.service.processAnalysis({projectId, jobId: failed.jobId})).resolves.toBeUndefined();
+
+    expect(await context.repository.listByProject(projectId)).toHaveLength(1);
+    expect(context.agent.analyzeCollection).toHaveBeenCalledTimes(2);
+    expect(context.repository.allJobsForProject(projectId)).toEqual([
+      expect.objectContaining({id: failed.jobId, status: 'failed'}),
+      expect.objectContaining({id: replacement.jobId, status: 'completed'})
+    ]);
+  });
+
+  it('treats failed and completed claims as terminal while pending remains claimable', async () => {
+    const context = setup();
+    const first = await context.repository.createAnalysisJob(projectId);
+    const claim = await context.repository.claimAnalysisJob(first.id, projectId, new Date(), 60_000);
+    if (claim.outcome !== 'claimed') throw new Error('CLAIM_SETUP_FAILED');
+    await context.repository.failAnalysis(first.id, claim.leaseToken, 'PERMANENT_FAILURE');
+    await expect(context.repository.claimAnalysisJob(first.id, projectId, new Date(), 60_000)).resolves.toEqual({outcome: 'terminal'});
+
+    const second = await context.repository.createAnalysisJob(projectId);
+    const secondClaim = await context.repository.claimAnalysisJob(second.id, projectId, new Date(), 60_000);
+    expect(secondClaim.outcome).toBe('claimed');
+  });
+
   it('creates at most one fresh active job when failed-job retries race', async () => {
     const context = setup();
     context.agent.analyzeCollection.mockRejectedValueOnce(new Error('PERMANENT_ANALYSIS_FAILURE'));

@@ -7,6 +7,18 @@ import type {EvidenceRepository} from './evidence-repository';
 
 export interface AnalysisAssetSource { listReadyAnalysisAssets(projectId: string): Promise<AnalysisAsset[]>; }
 
+const isTerminalAnalysisFailure = (error: unknown) => {
+  if (!(error instanceof Error)) return false;
+  // Provider/network failures remain pending for Cloud Tasks redelivery.
+  // Invalid inputs/output cannot succeed unchanged and are terminal until the
+  // creator explicitly requests a fresh job after correcting the collection.
+  return error.message.startsWith('PERMANENT_') || error.name === 'ZodError' || [
+    'THREE_TO_SEVEN_READY_IMAGES_REQUIRED', 'INVALID_MODEL_OUTPUT',
+    'UNKNOWN_EVIDENCE_SOURCE', 'INVALID_IMAGE_ORDERING', 'UNSAFE_IMAGE_SOURCE',
+    'ANALYSIS_TEXT_TOO_LARGE'
+  ].includes(error.message);
+};
+
 export class PrivateAnalysisAssetSource implements AnalysisAssetSource {
   constructor(private readonly repository: AssetRepository, private readonly storage: MediaStorage) {}
 
@@ -64,7 +76,7 @@ export class EvidenceService {
 
   async processAnalysis(input: {projectId: string; jobId: string}) {
     const claim = await this.repository.claimAnalysisJob(input.jobId, input.projectId, this.now(), 5 * 60 * 1_000);
-    if (claim.outcome === 'completed') return;
+    if (claim.outcome === 'completed' || claim.outcome === 'terminal') return;
     if (claim.outcome === 'busy') throw new Error('ANALYSIS_JOB_BUSY');
     if (claim.outcome === 'missing') throw new Error('ANALYSIS_JOB_NOT_FOUND');
     try {
@@ -75,7 +87,12 @@ export class EvidenceService {
       await this.repository.completeAnalysis(input.jobId, input.projectId, claim.leaseToken, analysis.evidenceCandidates);
       return analysis;
     } catch (error) {
-      await this.repository.failAnalysis(input.jobId, claim.leaseToken, error instanceof Error ? error.message : 'ANALYSIS_FAILED');
+      const message = error instanceof Error ? error.message : 'ANALYSIS_FAILED';
+      if (isTerminalAnalysisFailure(error)) {
+        await this.repository.failAnalysis(input.jobId, claim.leaseToken, message);
+      } else {
+        await this.repository.retryAnalysis(input.jobId, claim.leaseToken, message);
+      }
       throw error;
     }
   }

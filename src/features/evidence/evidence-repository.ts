@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {and, eq, inArray, lte, or, sql} from 'drizzle-orm';
+import {and, eq, lte, or, sql} from 'drizzle-orm';
 
 import type {Database} from '../../server/db/client';
 import {evidenceItems, processingJobs} from '../../server/db/schema';
@@ -20,13 +20,25 @@ export type ClaimResult =
   | {outcome: 'claimed'; leaseToken: string}
   | {outcome: 'busy'}
   | {outcome: 'completed'}
+  | {outcome: 'terminal'}
   | {outcome: 'missing'};
+
+export const claimDisposition = (
+  job: Pick<AnalysisJob, 'status' | 'leaseExpiresAt'>,
+  now: Date
+): 'claimable' | 'busy' | 'completed' | 'terminal' => {
+  if (job.status === 'completed') return 'completed';
+  if (job.status === 'failed') return 'terminal';
+  if (job.status === 'pending') return 'claimable';
+  return job.leaseExpiresAt !== null && job.leaseExpiresAt <= now ? 'claimable' : 'busy';
+};
 
 export interface EvidenceRepository {
   findActiveAnalysisJob(projectId: string): Promise<AnalysisJob | undefined>;
   createAnalysisJob(projectId: string): Promise<AnalysisJob>;
   claimAnalysisJob(jobId: string, projectId: string, now: Date, leaseMs: number): Promise<ClaimResult>;
   completeAnalysis(jobId: string, projectId: string, leaseToken: string, candidates: EvidenceCandidate[]): Promise<void>;
+  retryAnalysis(jobId: string, leaseToken: string, message: string): Promise<void>;
   failAnalysis(jobId: string, leaseToken: string, message: string): Promise<void>;
   createProposed(projectId: string, candidates: EvidenceCandidate[]): Promise<EvidenceItem[]>;
   findById(id: string): Promise<EvidenceItem | undefined>;
@@ -78,12 +90,13 @@ export class PostgresEvidenceRepository implements EvidenceRepository {
       leaseToken, lastError: null, updatedAt: now
     }).where(and(
       eq(processingJobs.id, jobId), eq(processingJobs.projectId, projectId),
-      or(inArray(processingJobs.status, ['pending', 'failed']), and(eq(processingJobs.status, 'processing'), lte(processingJobs.leaseExpiresAt, now)))
+      or(eq(processingJobs.status, 'pending'), and(eq(processingJobs.status, 'processing'), lte(processingJobs.leaseExpiresAt, now)))
     )).returning();
     if (row) return {outcome: 'claimed', leaseToken};
     const existing = await this.database.query.processingJobs.findFirst({where: (table, {and: all, eq: equals}) => all(equals(table.id, jobId), equals(table.projectId, projectId))});
     if (!existing) return {outcome: 'missing'};
-    return {outcome: existing.status === 'completed' ? 'completed' : 'busy'};
+    const disposition = claimDisposition(mapJob(existing), now);
+    return {outcome: disposition === 'claimable' ? 'busy' : disposition};
   }
 
   async completeAnalysis(jobId: string, projectId: string, leaseToken: string, candidates: EvidenceCandidate[]) {
@@ -101,6 +114,10 @@ export class PostgresEvidenceRepository implements EvidenceRepository {
 
   async failAnalysis(jobId: string, leaseToken: string, message: string) {
     await this.database.update(processingJobs).set({status: 'failed', leaseToken: null, leaseExpiresAt: null, lastError: message, updatedAt: new Date()}).where(and(eq(processingJobs.id, jobId), eq(processingJobs.leaseToken, leaseToken)));
+  }
+
+  async retryAnalysis(jobId: string, leaseToken: string, message: string) {
+    await this.database.update(processingJobs).set({status: 'pending', leaseToken: null, leaseExpiresAt: null, lastError: message, updatedAt: new Date()}).where(and(eq(processingJobs.id, jobId), eq(processingJobs.leaseToken, leaseToken)));
   }
 
   async createProposed(projectId: string, candidates: EvidenceCandidate[]) {
@@ -139,9 +156,8 @@ export class InMemoryEvidenceRepository implements EvidenceRepository {
   async claimAnalysisJob(jobId: string, projectId: string, now: Date, leaseMs: number): Promise<ClaimResult> {
     const job = this.jobs.get(jobId);
     if (!job || job.projectId !== projectId) return {outcome: 'missing'};
-    if (job.status === 'completed') return {outcome: 'completed'};
-    const reclaimable = job.status === 'processing' && job.leaseExpiresAt !== null && job.leaseExpiresAt <= now;
-    if (!['pending', 'failed'].includes(job.status) && !reclaimable) return {outcome: 'busy'};
+    const disposition = claimDisposition(job, now);
+    if (disposition !== 'claimable') return {outcome: disposition};
     const leaseToken = randomUUID();
     this.jobs.set(jobId, {...job, status: 'processing', attemptCount: job.attemptCount + 1, processingStartedAt: now, leaseExpiresAt: new Date(now.getTime() + leaseMs), leaseToken});
     return {outcome: 'claimed', leaseToken};
@@ -152,7 +168,8 @@ export class InMemoryEvidenceRepository implements EvidenceRepository {
     await this.createProposed(projectId, candidates);
     this.jobs.set(jobId, {...job, status: 'completed', leaseToken: null, leaseExpiresAt: null});
   }
-  async failAnalysis(jobId: string, leaseToken: string) { const job = this.jobs.get(jobId); if (job?.leaseToken === leaseToken) this.jobs.set(jobId, {...job, status: 'failed', leaseToken: null, leaseExpiresAt: null}); }
+  async failAnalysis(jobId: string, leaseToken: string, message: string) { void message; const job = this.jobs.get(jobId); if (job?.leaseToken === leaseToken) this.jobs.set(jobId, {...job, status: 'failed', leaseToken: null, leaseExpiresAt: null}); }
+  async retryAnalysis(jobId: string, leaseToken: string, message: string) { void message; const job = this.jobs.get(jobId); if (job?.leaseToken === leaseToken) this.jobs.set(jobId, {...job, status: 'pending', leaseToken: null, leaseExpiresAt: null}); }
   async createProposed(projectId: string, candidates: EvidenceCandidate[]) {
     return candidates.map((candidate) => {
       const item: EvidenceItem = {id: randomUUID(), projectId, kind: candidate.kind, claim: candidate.claim, originalClaim: candidate.claim, sourceAssetIds: [...candidate.sourceAssetIds], sourceExcerpt: candidate.sourceExcerpt, confidence: candidate.confidence, verificationStatus: 'proposed', correction: null};
