@@ -1,18 +1,26 @@
 import type {ConsentService} from '../consent/consent-service';
 import type {ProcessingProvider} from '../consent/schemas';
-import type {ProviderExecutionInput, ProviderExecution, ProviderExecutor} from './types';
+import type {ProviderExecutionInput, ProviderExecution, ProviderExecutor, ProviderPreparationInput, PreparedProviderExecutionInput} from './types';
 import type {ProviderRunService} from './provider-run-service';
 
 export class DefaultProviderExecutor implements ProviderExecutor {
   constructor(private readonly consents: ConsentService, private readonly runs: ProviderRunService) {}
-  async execute<T>(input: ProviderExecutionInput<T>): Promise<ProviderExecution<T>> {
+  async prepare(input: ProviderPreparationInput) {
     const consent = await this.consents.assertProcessingConsent(input.projectId, input.provider as ProcessingProvider, input.dataCategories);
-    const reservation = await this.runs.reserve({...input, consentId: consent.id, consentSnapshotHash: consent.snapshotHash, dataCategories: input.dataCategories});
-    if (reservation.cacheHit) return {runId: reservation.runId, cacheHit: true, result: await input.loadResult(reservation.runId)};
-    const existing = await this.runs.get(reservation.runId);
-    if (existing?.status === 'completed') return {runId: reservation.runId, cacheHit: true, result: await input.loadResult(reservation.runId)};
-    const claim = await this.runs.claim(reservation.runId);
+    return this.runs.reserve({...input, consentId: consent.id, consentSnapshotHash: consent.snapshotHash, dataCategories: input.dataCategories});
+  }
+  async releasePrepared(runId: string) { return this.runs.cancelReservation(runId); }
+  async getRunStatus(runId: string) { return (await this.runs.get(runId))?.status; }
+  async execute<T>(input: ProviderExecutionInput<T>): Promise<ProviderExecution<T>> {
+    const prepared = await this.prepare(input);
+    return this.executePrepared({...input, preparedRunId: prepared.runId});
+  }
+  async executePrepared<T>(input: PreparedProviderExecutionInput<T>): Promise<ProviderExecution<T>> {
+    const existing = await this.runs.assertPrepared(input.preparedRunId, input);
     const dispatchConsent = await this.consents.assertProcessingConsent(input.projectId, input.provider as ProcessingProvider, input.dataCategories);
+    if (dispatchConsent.id !== existing.consentId) throw new Error('PROCESSING_CONSENT_REQUIRED');
+    if (existing.status === 'completed') return {runId: existing.id, cacheHit: true, result: await input.loadResult(existing.id)};
+    const claim = await this.runs.claim(existing.id);
     if (dispatchConsent.id !== claim.consentId) throw new Error('PROCESSING_CONSENT_REQUIRED');
     await this.runs.beginDispatch(claim, async () => {
       const finalConsent = await this.consents.assertProcessingConsent(input.projectId, input.provider as ProcessingProvider, input.dataCategories);

@@ -1,5 +1,5 @@
 {
-  "id": "f8385f45-85f7-4a2c-81a5-e02d6ab11178",
+  "id": "50831280-f0bb-40f2-b2dd-e01430636a25",
   "prevId": "30791d56-3f77-4691-a338-8d63765345f5",
   "version": "7",
   "dialect": "postgresql",
@@ -766,6 +766,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "provider_run_id": {
+          "name": "provider_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "job_type": {
           "name": "job_type",
           "type": "varchar(40)",
@@ -843,7 +849,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"processing_jobs\".\"job_type\" = 'analyze_collection' AND \"processing_jobs\".\"status\" IN ('pending', 'processing')",
+          "where": "\"processing_jobs\".\"status\" IN ('pending', 'processing')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -897,6 +903,19 @@
           "tableTo": "assets",
           "columnsFrom": [
             "asset_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "processing_jobs_provider_run_id_provider_runs_id_fk": {
+          "name": "processing_jobs_provider_run_id_provider_runs_id_fk",
+          "tableFrom": "processing_jobs",
+          "tableTo": "provider_runs",
+          "columnsFrom": [
+            "provider_run_id"
           ],
           "columnsTo": [
             "id"
@@ -1992,6 +2011,135 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.transcript_evidence_segments": {
+      "name": "transcript_evidence_segments",
+      "schema": "",
+      "columns": {
+        "evidence_item_id": {
+          "name": "evidence_item_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "transcript_id": {
+          "name": "transcript_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "asset_id": {
+          "name": "asset_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "start_ms": {
+          "name": "start_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "end_ms": {
+          "name": "end_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "transcript_evidence_segments_project_asset_idx": {
+          "name": "transcript_evidence_segments_project_asset_idx",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "asset_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "transcript_evidence_segments_evidence_item_id_evidence_items_id_fk": {
+          "name": "transcript_evidence_segments_evidence_item_id_evidence_items_id_fk",
+          "tableFrom": "transcript_evidence_segments",
+          "tableTo": "evidence_items",
+          "columnsFrom": [
+            "evidence_item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "transcript_evidence_segments_transcript_id_asset_transcripts_id_fk": {
+          "name": "transcript_evidence_segments_transcript_id_asset_transcripts_id_fk",
+          "tableFrom": "transcript_evidence_segments",
+          "tableTo": "asset_transcripts",
+          "columnsFrom": [
+            "transcript_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "transcript_evidence_segments_project_id_projects_id_fk": {
+          "name": "transcript_evidence_segments_project_id_projects_id_fk",
+          "tableFrom": "transcript_evidence_segments",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "transcript_evidence_segments_asset_id_assets_id_fk": {
+          "name": "transcript_evidence_segments_asset_id_assets_id_fk",
+          "tableFrom": "transcript_evidence_segments",
+          "tableTo": "assets",
+          "columnsFrom": [
+            "asset_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "transcript_evidence_segments_bounds_check": {
+          "name": "transcript_evidence_segments_bounds_check",
+          "value": "\"transcript_evidence_segments\".\"start_ms\" >= 0 AND \"transcript_evidence_segments\".\"end_ms\" > \"transcript_evidence_segments\".\"start_ms\""
+        }
+      },
       "isRLSEnabled": false
     },
     "public.voice_profiles": {

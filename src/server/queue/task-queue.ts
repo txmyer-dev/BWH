@@ -15,6 +15,7 @@ export interface TranscriptionTask {
   projectId: string;
   assetId: string;
   jobId: string;
+  providerRunId: string;
 }
 
 export interface CleanupProviderArtifactTask {

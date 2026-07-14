@@ -68,9 +68,9 @@ const createAgent = (): StoryGuideAgent => ({
   })
 });
 
-const createService = (evidence: EvidenceItem[], assertCreator = async () => undefined, assets = new MutableProjectAssets()) => {
+const createService = (evidence: EvidenceItem[], assertCreator = async () => undefined, assets = new MutableProjectAssets(), segments = new Map(evidence.filter((item) => item.kind === 'transcript' && !item.sourceExcerpt.startsWith('Creator-provided')).map((item) => [item.id, {assetId: item.sourceAssetIds[0], startMs: 1000, endMs: 9000}]))) => {
   const repository = new InMemoryStoryRepository();
-  return {repository, assets, service: new StoryService(repository, createAgent(), {listByProject: async () => evidence}, assets, assertCreator)};
+  return {repository, assets, service: new StoryService(repository, createAgent(), {listByProject: async () => evidence, findTranscriptSegment: async (_projectId, id) => segments.get(id)}, assets, assertCreator)};
 };
 
 describe('StoryService guardrails', () => {
@@ -90,6 +90,19 @@ describe('StoryService guardrails', () => {
   it('never treats a model hypothesis as factual evidence even after review', async () => {
     const {service} = createService([approved({kind: 'model_hypothesis', verificationStatus: 'confirmed'})]);
     await expect(service.composeStoryboard(projectId)).rejects.toThrow('APPROVED_EVIDENCE_REQUIRED');
+  });
+
+  it('requires and validates exact timed evidence for agent-composed original audio', async () => {
+    const transcript = approved({kind: 'transcript', verificationStatus: 'confirmed'});
+    const agent = createAgent();
+    const base = await agent.composeStoryboard({projectId, approvedEvidence: [{id: transcript.id, projectId, kind: transcript.kind, claim: transcript.claim, sourceAssetIds: transcript.sourceAssetIds, sourceExcerpt: transcript.sourceExcerpt}]});
+    agent.composeStoryboard = async () => ({...base, scenes: [{...base.scenes[0], sceneType: 'original_audio', authenticClip: undefined}]});
+    const repository = new InMemoryStoryRepository();
+    const evidence = {listByProject: async () => [transcript], findTranscriptSegment: async () => ({assetId, startMs: 1000, endMs: 9000})};
+    const service = new StoryService(repository, agent, evidence, new MutableProjectAssets(), async () => undefined);
+    await expect(service.composeStoryboard(projectId)).rejects.toThrow('AUTHENTIC_CLIP_REQUIRED');
+    agent.composeStoryboard = async () => ({...base, scenes: [{...base.scenes[0], sceneType: 'original_audio', authenticClip: {assetId, evidenceItemId: transcript.id, startMs: 1000, endMs: 9000}}]});
+    await expect(service.composeStoryboard(projectId)).resolves.toMatchObject({scenes: [expect.objectContaining({sceneType: 'original_audio', authenticClip: {assetId, evidenceItemId: transcript.id, startMs: 1000, endMs: 9000}})]});
   });
 
   it('feeds corrected evidence to story composition only as the effective corrected fact', async () => {
@@ -205,7 +218,7 @@ describe('StoryService guardrails', () => {
     expect(edited.scenes[0].authenticClip).toEqual(authenticClip);
     await expect(service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {
       sceneType: 'original_audio', authenticClip: {...authenticClip, endMs: 10_001}
-    }, edited.revision)).rejects.toThrow('AUTHENTIC_CLIP_INVALID');
+    }, edited.revision)).rejects.toThrow('AUTHENTIC_CLIP_OUTSIDE_EVIDENCE_SEGMENT');
   });
 
   it('rejects proposed or cross-asset transcript evidence for authentic clips', async () => {
@@ -217,6 +230,22 @@ describe('StoryService guardrails', () => {
     await expect(composed.service.editScene(projectId, storyboard.id, storyboard.scenes[0].id, {
       sceneType: 'original_audio', authenticClip: {assetId, evidenceItemId: transcript.id, startMs: 0, endMs: 1000}
     }, storyboard.revision)).rejects.toThrow('AUTHENTIC_CLIP_EVIDENCE_REQUIRED');
+  });
+
+  it('rejects clips that only partially overlap or use an unrelated timed transcript segment', async () => {
+    const transcript = approved({kind: 'transcript', sourceAssetIds: [assetId]}); const {service} = createService([transcript]);
+    const board = await service.composeStoryboard(projectId);
+    await expect(service.editScene(projectId, board.id, board.scenes[0].id, {sceneType: 'original_audio', authenticClip: {assetId, evidenceItemId: transcript.id, startMs: 500, endMs: 2000}}, board.revision)).rejects.toThrow('AUTHENTIC_CLIP_OUTSIDE_EVIDENCE_SEGMENT');
+    const otherEvidence = approved({kind: 'transcript', sourceAssetIds: [assetId]});
+    const unrelated = createService([transcript, otherEvidence], async () => undefined, new MutableProjectAssets(), new Map([[transcript.id, {assetId, startMs: 1000, endMs: 9000}], [otherEvidence.id, {assetId: crypto.randomUUID(), startMs: 1000, endMs: 2000}]]));
+    const unrelatedBoard = await unrelated.service.composeStoryboard(projectId);
+    await expect(unrelated.service.editScene(projectId, unrelatedBoard.id, unrelatedBoard.scenes[0].id, {sceneType: 'original_audio', authenticClip: {assetId, evidenceItemId: otherEvidence.id, startMs: 1000, endMs: 2000}}, unrelatedBoard.revision)).rejects.toThrow('AUTHENTIC_CLIP_OUTSIDE_EVIDENCE_SEGMENT');
+  });
+
+  it('never lets an untimed creator fallback authorize an authentic clip', async () => {
+    const manual = approved({kind: 'transcript', sourceAssetIds: [assetId], sourceExcerpt: 'Creator-provided transcript: memory'}); const {service} = createService([manual]);
+    const board = await service.composeStoryboard(projectId);
+    await expect(service.editScene(projectId, board.id, board.scenes[0].id, {sceneType: 'original_audio', authenticClip: {assetId, evidenceItemId: manual.id, startMs: 1000, endMs: 2000}}, board.revision)).rejects.toThrow('AUTHENTIC_CLIP_OUTSIDE_EVIDENCE_SEGMENT');
   });
 
   it.each([

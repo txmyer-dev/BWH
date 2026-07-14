@@ -19,13 +19,13 @@ export interface DeepgramClient {
 const milliseconds = (seconds: number) => Math.round(seconds * 1_000);
 
 export class DeepgramTranscriber implements Transcriber {
-  constructor(private readonly client: DeepgramClient) {}
+  constructor(private readonly client: DeepgramClient, private readonly config: {model: string}) {}
 
   async transcribe(input: {bytes: Uint8Array; mimeType: string; signal?: AbortSignal}): Promise<Transcript> {
     void input.mimeType;
     try {
       const request = this.client.listen.prerecorded.transcribeFile(input.bytes, {
-        model: 'nova-3', smart_format: true, diarize: true, mip_opt_out: true,
+        model: this.config.model, smart_format: true, diarize: true, mip_opt_out: true,
         utterances: true, punctuate: true, language: 'en', multichannel: false
       }, ...(input.signal ? [{abortSignal: input.signal, maxRetries: 0}] : []));
       const response = await request;

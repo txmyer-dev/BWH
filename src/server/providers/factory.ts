@@ -12,6 +12,7 @@ import {ProviderRunService} from '../../features/providers/provider-run-service'
 import type {ProviderExecutor} from '../../features/providers/types';
 import type {Database} from '../db/client';
 import {DeepgramTranscriber, type DeepgramClient, type DeepgramResponse} from '../../features/transcription/deepgram-transcriber';
+import {deepgramTranscriptionPricing} from '../../features/transcription/transcription-service';
 
 type ProviderEnvironment = {
   NODE_ENV: 'development'|'test'|'production';
@@ -22,6 +23,7 @@ type ProviderEnvironment = {
   GEMINI_PAID_PROJECT_VERIFIED: boolean;
   GEMINI_PAID_PROJECT_ID?: string;
   DEEPGRAM_API_KEY?: string;
+  DEEPGRAM_TRANSCRIPTION_MODEL?: string;
   PROVIDER_FINGERPRINT_SECRET?: string;
   PROVIDER_DEFAULT_BUDGET_MICROS?: number;
   PROVIDER_DEFAULT_REQUEST_BUDGET?: number;
@@ -69,9 +71,10 @@ export const createProviderServices = (env: ProviderEnvironment, dependencies: P
       result: await sdk.listen.v1.media.transcribeFile(bytes, options as never, requestOptions) as unknown as DeepgramResponse['result'], error: null
     })}}};
   }))(env.DEEPGRAM_API_KEY) : undefined;
+  if (deepgramClient) deepgramTranscriptionPricing(env.DEEPGRAM_TRANSCRIPTION_MODEL!);
   return {
     executor,
     storyAgent: new GeminiStoryAgent(client, {model: env.GEMINI_STORY_MODEL}, executor, results, artifacts, listReadyAssetIds),
-    deepgramTranscriber: deepgramClient ? new DeepgramTranscriber(deepgramClient) : undefined
+    deepgramTranscriber: deepgramClient ? new DeepgramTranscriber(deepgramClient, {model: env.DEEPGRAM_TRANSCRIPTION_MODEL!}) : undefined
   };
 };

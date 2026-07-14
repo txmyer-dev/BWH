@@ -33,6 +33,13 @@ describe('storyboard revision migration history', () => {
     expect(provider).toContain('CREATE INDEX "provider_runs_retry_of_run_idx"');
   });
 
+  it('keeps the Task 9 migration strictly additive', () => {
+    const migration = readFileSync(join(directory, '0007_asset_transcripts.sql'), 'utf8');
+    expect(migration).not.toMatch(/DROP\s|TRUNCATE\s|DELETE FROM/);
+    expect(migration).toContain('CREATE TABLE "transcript_evidence_segments"');
+    expect(migration).toContain('ALTER TABLE "processing_jobs" ADD COLUMN "provider_run_id" uuid');
+  });
+
   it('ships a fresh ordered sequence with a valid journal and snapshot chain', () => {
     const journal = JSON.parse(readFileSync(join(directory, 'meta', '_journal.json'), 'utf8')) as {entries: {idx: number; tag: string}[]};
     const initial = JSON.parse(readFileSync(join(directory, 'meta', '0000_snapshot.json'), 'utf8')) as {id: string; prevId: string; tables: Record<string, {columns: Record<string, unknown>}>};
@@ -64,6 +71,8 @@ describe('storyboard revision migration history', () => {
     expect(providerFixes.tables['public.provider_runs'].columns).toHaveProperty('consent_snapshot_hash');
     expect(transcripts.prevId).toBe((JSON.parse(readFileSync(join(directory, 'meta', '0006_snapshot.json'), 'utf8')) as {id: string}).id);
     expect(transcripts.tables).toHaveProperty('public.asset_transcripts');
+    expect(transcripts.tables).toHaveProperty('public.transcript_evidence_segments');
     expect(transcripts.tables['public.film_scenes'].columns).toHaveProperty('authentic_clip');
+    expect(transcripts.tables['public.processing_jobs'].columns).toHaveProperty('provider_run_id');
   });
 });

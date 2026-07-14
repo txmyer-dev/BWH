@@ -41,6 +41,24 @@ describe('provider run state and budget control', () => {
     await expect(runs.reserve({...input, canonicalInput: {different: true}})).rejects.toThrow('PROJECT_PROVIDER_REQUEST_BUDGET_EXCEEDED');
   });
 
+  it('transactionally releases an unused reservation so budget and request capacity can be reused', async () => {
+    const runs = new ProviderRunService(new InMemoryProviderRunRepository(), {fingerprintSecret: 'secret', defaultBudgetMicros: 2_000, defaultRequestBudget: 1});
+    const reserved = await runs.reserve(input);
+    await expect(runs.cancelReservation(reserved.runId)).resolves.toBe(true);
+    await expect(runs.reserve({...input, canonicalInput: {different: true}})).resolves.toMatchObject({cacheHit: false});
+    expect((await runs.get(reserved.runId))?.status).toBe('failed');
+  });
+
+  it('never cancels a shared reservation after a concurrent request links a job', async () => {
+    const linkedRunIds = new Set<string>();
+    const runs = new ProviderRunService(new InMemoryProviderRunRepository(() => new Date(), (runId) => linkedRunIds.has(runId)), {fingerprintSecret: 'secret', defaultBudgetMicros: 2_000, defaultRequestBudget: 1});
+    const first = await runs.reserve(input); const shared = await runs.reserve(input);
+    expect(shared.runId).toBe(first.runId);
+    linkedRunIds.add(shared.runId);
+    await expect(runs.cancelReservation(first.runId)).resolves.toBe(false);
+    expect((await runs.get(first.runId))?.status).toBe('reserved');
+  });
+
   it('retires an obsolete-consent reservation so replacement consent can reserve the same input', async () => {
     const repository = new InMemoryProviderRunRepository(); const runs = new ProviderRunService(repository, {fingerprintSecret: 'secret', defaultBudgetMicros: 9_000});
     const old = await runs.reserve(input);

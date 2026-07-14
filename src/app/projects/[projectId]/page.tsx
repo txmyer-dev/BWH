@@ -14,6 +14,7 @@ import {
   type UploadStatus
 } from '@/features/media/upload-ui-state';
 import type {EvidenceItem} from '@/features/evidence/schemas';
+import {processingConsentDataCategories} from '@/features/consent/processing-disclosure';
 import {durationSecondsToMs} from '@/features/media/audio-duration';
 import type {Question, Storyboard} from '@/features/story/story-service';
 import {
@@ -453,11 +454,7 @@ export default function ProjectPage({
           : ['google_gemini', 'deepgram', 'openai'],
         dataCategories: storage
           ? ['original_media', 'derived_media']
-          : [
-              'selected_photos', 'captions', 'written_artifacts', 'transcripts',
-              'approved_story_context', 'source_audio', 'approved_narration_text',
-              'source_references'
-            ],
+          : processingConsentDataCategories,
         permissionConfirmed
       })
     });
@@ -502,7 +499,7 @@ export default function ProjectPage({
           </p>
           <ul>
             <li><strong>Google Gemini Developer API:</strong> selected photos, captions, written artifacts, transcripts, and approved story context for analysis and story composition. Gemini has no regional data-residency promise. <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noreferrer">Privacy and terms</a></li>
-            <li><strong>Deepgram:</strong> uploaded audio for transcription; approved narration text and the Arcas voice setting for narration. <a href="https://deepgram.com/privacy" target="_blank" rel="noreferrer">Privacy information</a></li>
+            <li><strong>Deepgram:</strong> source recordings or creator-provided narration for transcription; approved narration text and the Arcas voice setting for narration. <a href="https://deepgram.com/privacy" target="_blank" rel="noreferrer">Privacy information</a></li>
             <li><strong>OpenAI:</strong> only the approved evidence ledger, source references, and final narration text for factuality review. <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noreferrer">Privacy information</a></li>
             <li><strong>Microsoft Azure (optional, not currently selected):</strong> only approved narration text and voice settings after you explicitly select Azure. <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noreferrer">Privacy information</a></li>
           </ul>

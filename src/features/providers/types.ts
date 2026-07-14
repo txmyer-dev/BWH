@@ -20,8 +20,15 @@ export type ProviderExecutionInput<T> = {
   persistResult: (writer: ProviderResultWriter, claim: DispatchClaim, result: T) => Promise<void>;
   cleanupOrphanedResult?: (result: T) => Promise<void>;
 };
+export type ProviderPreparationInput = Pick<ProviderExecutionInput<unknown>, 'projectId'|'provider'|'model'|'operation'|'dataCategories'|'canonicalInput'|'estimatedCostMicros'|'pricingVersion'>;
+export type PreparedProviderRun = {runId: string; cacheHit: boolean};
+export type PreparedProviderExecutionInput<T> = ProviderExecutionInput<T> & {preparedRunId: string};
 export type ProviderExecution<T> = {runId: string; cacheHit: boolean; result: T};
 export interface ProviderExecutor {
+  prepare?(input: ProviderPreparationInput): Promise<PreparedProviderRun>;
+  releasePrepared?(runId: string): Promise<boolean>;
+  executePrepared?<T>(input: PreparedProviderExecutionInput<T>): Promise<ProviderExecution<T>>;
+  getRunStatus?(runId: string): Promise<ProviderRunStatus | undefined>;
   execute<T>(input: ProviderExecutionInput<T>): Promise<ProviderExecution<T>>;
 }
 

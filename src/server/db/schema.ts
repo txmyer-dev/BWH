@@ -235,6 +235,7 @@ export const processingJobs = pgTable(
     id: uuid('id').primaryKey(),
     projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
     assetId: uuid('asset_id').references(() => assets.id, {onDelete: 'cascade'}),
+    providerRunId: uuid('provider_run_id').references(() => providerRuns.id, {onDelete: 'cascade'}),
     jobType: varchar('job_type', {length: 40}).notNull(),
     status: varchar('status', {length: 30}).default('pending').notNull(),
     attemptCount: integer('attempt_count').default(0).notNull(),
@@ -247,7 +248,7 @@ export const processingJobs = pgTable(
   (table) => [
     uniqueIndex('processing_jobs_active_analysis_unique')
       .on(table.projectId, table.jobType)
-      .where(sql`${table.jobType} = 'analyze_collection' AND ${table.status} IN ('pending', 'processing')`),
+      .where(sql`${table.status} IN ('pending', 'processing')`),
     uniqueIndex('processing_jobs_active_transcription_asset_unique')
       .on(table.projectId, table.assetId, table.jobType)
       .where(sql`${table.jobType} = 'transcribe_asset' AND ${table.status} IN ('pending', 'processing')`)
@@ -329,6 +330,18 @@ export const assetTranscripts = pgTable('asset_transcripts', {
   index('asset_transcripts_project_idx').on(table.projectId),
   check('asset_transcripts_duration_positive_check', sql`${table.durationMs} > 0`),
   check('asset_transcripts_confidence_check', sql`${table.confidence} IS NULL OR (${table.confidence} >= 0 AND ${table.confidence} <= 1)`)
+]);
+
+export const transcriptEvidenceSegments = pgTable('transcript_evidence_segments', {
+  evidenceItemId: uuid('evidence_item_id').primaryKey().references(() => evidenceItems.id, {onDelete: 'cascade'}),
+  transcriptId: uuid('transcript_id').notNull().references(() => assetTranscripts.id, {onDelete: 'cascade'}),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  assetId: uuid('asset_id').notNull().references(() => assets.id, {onDelete: 'cascade'}),
+  startMs: integer('start_ms').notNull(),
+  endMs: integer('end_ms').notNull()
+}, (table) => [
+  check('transcript_evidence_segments_bounds_check', sql`${table.startMs} >= 0 AND ${table.endMs} > ${table.startMs}`),
+  index('transcript_evidence_segments_project_asset_idx').on(table.projectId, table.assetId)
 ]);
 
 export const providerArtifacts = pgTable('provider_artifacts', {

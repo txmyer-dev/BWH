@@ -13,7 +13,7 @@ import {createProviderServices} from '@/server/providers/factory';
 import {verifyCloudTaskRequest} from '@/server/queue/cloud-tasks';
 import {internalTranscriptionErrorStatus} from './response-status';
 
-const taskSchema = z.object({type: z.literal('transcribe_asset'), projectId: z.string().uuid(), assetId: z.string().uuid(), jobId: z.string().uuid()}).strict();
+const taskSchema = z.object({type: z.literal('transcribe_asset'), projectId: z.string().uuid(), assetId: z.string().uuid(), jobId: z.string().uuid(), providerRunId: z.string().uuid()}).strict();
 
 export async function POST(request: Request) {
   try {
@@ -25,10 +25,11 @@ export async function POST(request: Request) {
     if (!deepgramTranscriber) throw new Error('DEEPGRAM_NOT_CONFIGURED');
     const service = new TranscriptionService(
       new PostgresAssetRepository(database), new GcsMediaStorage(env.GCS_BUCKET), executor,
-      deepgramTranscriber, new PostgresTranscriptionRepository(database), new PostgresEvidenceRepository(database)
+      deepgramTranscriber, new PostgresTranscriptionRepository(database), new PostgresEvidenceRepository(database),
+      undefined, async () => undefined, env.DEEPGRAM_TRANSCRIPTION_MODEL
     );
     const status = await service.processTask(task);
-    if (status === 'busy') throw new Error('TRANSCRIPTION_JOB_BUSY');
+    if (status === 'busy' || status === 'in_flight') throw new Error('TRANSCRIPTION_JOB_BUSY');
     if (status === 'missing') throw new Error('TRANSCRIPTION_JOB_NOT_FOUND');
     return NextResponse.json({status});
   } catch (error) {

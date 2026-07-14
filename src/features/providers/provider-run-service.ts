@@ -10,6 +10,14 @@ export class ProviderRunService {
   private readonly leaseMs: number;
   constructor(private readonly repository: ProviderRunRepository, private readonly config: Config) { this.leaseMs = config.leaseMs ?? 60_000; }
   async reserve(input: ReserveInput) { const {canonicalInput, ...stored} = input; return this.repository.reserve({...stored, consentSnapshotHash: input.consentSnapshotHash ?? 'unspecified', dataCategories: [...new Set(input.dataCategories ?? [])].sort(), inputFingerprint: fingerprintInput(this.config.fingerprintSecret, input.projectId, canonicalInput)}, this.config.defaultBudgetMicros, this.config.defaultRequestBudget ?? 100); }
+  async cancelReservation(runId: string) { return this.repository.cancelReservation(runId); }
+  async assertPrepared(runId: string, input: Omit<ReserveInput, 'consentId'|'consentSnapshotHash'>) {
+    const run = await this.repository.get(runId);
+    const categories = [...new Set(input.dataCategories ?? [])].sort();
+    const fingerprint = fingerprintInput(this.config.fingerprintSecret, input.projectId, input.canonicalInput);
+    if (!run || run.projectId !== input.projectId || run.provider !== input.provider || run.model !== input.model || run.operation !== input.operation || run.inputFingerprint !== fingerprint || run.estimatedCostMicros !== input.estimatedCostMicros || run.pricingVersion !== input.pricingVersion || JSON.stringify(run.dataCategories) !== JSON.stringify(categories)) throw new Error('PROVIDER_PREPARATION_MISMATCH');
+    return run;
+  }
   async claim(runId: string) { return this.repository.claim(runId, this.leaseMs); }
   async beginDispatch(claim: DispatchClaim, validateConsent?: () => Promise<void>) { return this.repository.beginDispatch(claim, validateConsent); }
   async heartbeat(claim: DispatchClaim) { return this.repository.heartbeat(claim, this.leaseMs); }

@@ -2,12 +2,13 @@ import {randomUUID} from 'node:crypto';
 import {and, desc, eq, inArray, lte, sql} from 'drizzle-orm';
 
 import type {Database} from '../../server/db/client';
-import {projectConsents, projectProviderBudgets, providerRuns} from '../../server/db/schema';
+import {processingJobs, projectConsents, projectProviderBudgets, providerRunResults, providerRuns} from '../../server/db/schema';
 import type {DispatchClaim, ProviderResultWriter, ProviderRun, ProviderUsage, ReserveProviderRunInput} from './types';
 
 export type Reservation = {runId: string; cacheHit: boolean};
 export interface ProviderRunRepository {
   reserve(input: ReserveProviderRunInput, budgetMicros: number, requestBudget: number): Promise<Reservation>;
+  cancelReservation(runId: string): Promise<boolean>;
   get(runId: string): Promise<ProviderRun | undefined>;
   claim(runId: string, leaseMs: number): Promise<DispatchClaim>;
   beginDispatch(claim: DispatchClaim, validateConsent?: () => Promise<void>): Promise<void>;
@@ -26,7 +27,7 @@ const clone = (run: ProviderRun): ProviderRun => ({...run, createdAt: new Date(r
 export class InMemoryProviderRunRepository implements ProviderRunRepository {
   private readonly runs = new Map<string, ProviderRun>();
   private lock: Promise<void> = Promise.resolve();
-  constructor(private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly now: () => Date = () => new Date(), private readonly isLinked: (runId: string) => boolean = () => false) {}
 
   private async atomic<T>(work: () => T | Promise<T>): Promise<T> {
     const previous = this.lock;
@@ -57,6 +58,7 @@ export class InMemoryProviderRunRepository implements ProviderRunRepository {
   }
 
   async get(runId: string) { const run = this.runs.get(runId); return run && clone(run); }
+  async cancelReservation(runId: string) { return this.atomic(() => { const run = this.runs.get(runId); if (!run || run.status !== 'reserved' || !run.activeResult || run.requestCount !== 0 || this.isLinked(runId)) return false; run.status = 'failed'; run.reservedCostMicros = 0; run.settledCostMicros = 0; run.activeResult = false; run.lastError = 'PROVIDER_RESERVATION_CANCELLED'; run.updatedAt = this.now(); return true; }); }
   async list(projectId: string) { return [...this.runs.values()].filter((run) => run.projectId === projectId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).map(clone); }
   async claim(runId: string, leaseMs: number) {
     return this.atomic(() => {
@@ -113,6 +115,20 @@ export class PostgresProviderRunRepository implements ProviderRunRepository {
     });
   }
   async get(runId: string) { const [row] = await this.database.select().from(providerRuns).where(eq(providerRuns.id, runId)).limit(1); return row && mapRow(row); }
+  async cancelReservation(runId: string) { return this.database.transaction(async (transaction) => {
+    const [candidate] = await transaction.select({projectId: providerRuns.projectId}).from(providerRuns).where(eq(providerRuns.id, runId)).limit(1);
+    if (!candidate) return false;
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${candidate.projectId}), hashtext('processing'))`);
+    const [run] = await transaction.select().from(providerRuns).where(eq(providerRuns.id, runId)).for('update').limit(1);
+    if (!run || run.status !== 'reserved' || !run.activeResult || run.requestCount !== 0) return false;
+    const [job] = await transaction.select({id: processingJobs.id}).from(processingJobs).where(eq(processingJobs.providerRunId, runId)).limit(1);
+    const [result] = await transaction.select({runId: providerRunResults.providerRunId}).from(providerRunResults).where(eq(providerRunResults.providerRunId, runId)).limit(1);
+    if (job || result) return false;
+    const now = this.now();
+    await transaction.update(providerRuns).set({status: 'failed', reservedCostMicros: 0, settledCostMicros: 0, activeResult: false, lastError: 'PROVIDER_RESERVATION_CANCELLED', updatedAt: now}).where(eq(providerRuns.id, runId));
+    await transaction.update(projectProviderBudgets).set({reservedMicros: sql`${projectProviderBudgets.reservedMicros} - ${run.reservedCostMicros}`, reservedRequests: sql`${projectProviderBudgets.reservedRequests} - 1`, updatedAt: now}).where(eq(projectProviderBudgets.projectId, run.projectId));
+    return true;
+  }); }
   async list(projectId: string) { return (await this.database.select().from(providerRuns).where(eq(providerRuns.projectId, projectId)).orderBy(desc(providerRuns.createdAt))).map(mapRow); }
   async claim(runId: string, leaseMs: number) { return this.database.transaction(async (transaction) => { const now = this.now(); const token = randomUUID(); const deadline = new Date(now.getTime() + leaseMs); const [row] = await transaction.update(providerRuns).set({status: 'processing', leaseToken: token, leaseExpiresAt: deadline, dispatchDeadlineAt: deadline, updatedAt: now}).where(and(eq(providerRuns.id, runId), inArray(providerRuns.status, ['reserved','processing']), sql`(${providerRuns.leaseExpiresAt} IS NULL OR ${providerRuns.leaseExpiresAt} <= ${now})`)).returning(); if (!row) throw new Error('PROVIDER_RUN_NOT_CLAIMABLE'); return {runId, leaseToken: token, consentId: row.consentId, dispatchDeadlineAt: deadline}; }); }
   async beginDispatch(claim: DispatchClaim, validateConsent?: () => Promise<void>) { await validateConsent?.(); await this.database.transaction(async (transaction) => { const [candidate] = await transaction.select().from(providerRuns).where(eq(providerRuns.id, claim.runId)).limit(1); if (!candidate) throw new Error('PROVIDER_RUN_FENCED'); await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${candidate.projectId}), hashtext('processing'))`); const categories = JSON.stringify(candidate.dataCategories); const now = this.now(); const [row] = await transaction.update(providerRuns).set({status: 'dispatching', requestCount: sql`${providerRuns.requestCount} + 1`, updatedAt: now}).where(and(eq(providerRuns.id, claim.runId), eq(providerRuns.consentId, claim.consentId), eq(providerRuns.leaseToken, claim.leaseToken), eq(providerRuns.status, 'processing'), sql`${providerRuns.leaseExpiresAt} > ${now}`, eq(providerRuns.activeResult, true), sql`exists (select 1 from ${projectConsents} where ${projectConsents.id} = ${claim.consentId} and ${projectConsents.projectId} = ${candidate.projectId} and ${projectConsents.purpose} = 'processing' and ${projectConsents.snapshotHash} = ${candidate.consentSnapshotHash} and ${projectConsents.invalidatedAt} is null and ${projectConsents.providers} @> ${JSON.stringify([candidate.provider])}::jsonb and ${projectConsents.dataCategories} @> ${categories}::jsonb)`)).returning(); if (!row) throw new Error('PROVIDER_RUN_FENCED'); await transaction.update(projectProviderBudgets).set({reservedRequests: sql`${projectProviderBudgets.reservedRequests} - 1`, settledRequests: sql`${projectProviderBudgets.settledRequests} + 1`, updatedAt: now}).where(eq(projectProviderBudgets.projectId, row.projectId)); }); }

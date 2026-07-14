@@ -33,7 +33,7 @@ export async function POST(request: Request, context: RouteContext) {
       const manual = new TranscriptionService(
         new PostgresAssetRepository(database), new GcsMediaStorage(env.GCS_BUCKET), unavailableExecutor,
         unavailableTranscriber, new PostgresTranscriptionRepository(database), new PostgresEvidenceRepository(database),
-        undefined, async () => undefined
+        undefined, async () => undefined, env.DEEPGRAM_TRANSCRIPTION_MODEL
       );
       return NextResponse.json(await manual.addCreatorTranscript({projectId, assetId: body.assetId, text: body.creatorTranscript}), {status: 201});
     }
@@ -48,7 +48,7 @@ export async function POST(request: Request, context: RouteContext) {
     const service = new TranscriptionService(
       new PostgresAssetRepository(database), new GcsMediaStorage(env.GCS_BUCKET), executor,
       deepgramTranscriber, new PostgresTranscriptionRepository(database), new PostgresEvidenceRepository(database),
-      queue, (id) => projects.assertProjectOwner(id, token)
+      queue, (id) => projects.assertProjectOwner(id, token), env.DEEPGRAM_TRANSCRIPTION_MODEL
     );
     return NextResponse.json(await service.request(projectId, body.assetId), {status: 202});
   } catch (error) {

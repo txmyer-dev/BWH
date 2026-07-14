@@ -17,6 +17,7 @@ describe('parseEnv', () => {
       PROVIDER_RUN_LEASE_MS: 60_000,
       PROVIDER_DEFAULT_BUDGET_MICROS: 5_000_000,
       PROVIDER_DEFAULT_REQUEST_BUDGET: 100
+      ,DEEPGRAM_TRANSCRIPTION_MODEL: 'nova-3'
     });
   });
 

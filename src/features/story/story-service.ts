@@ -10,6 +10,10 @@ import type {AssetRepository} from '../media/asset-service';
 export const motionPresetSchema = z.enum(['hold', 'slow_zoom_in', 'slow_pan_left', 'slow_pan_right']);
 export const transitionPresetSchema = z.enum(['crossfade', 'fade_to_black']);
 export const sceneTypeSchema = z.enum(['title', 'media', 'original_audio', 'dedication', 'credits']);
+const authenticClipSchema = z.object({
+  assetId: z.string().uuid(), evidenceItemId: z.string().uuid(),
+  startMs: z.number().int().nonnegative(), endMs: z.number().int().positive()
+}).strict();
 
 export const filmSceneInputSchema = z.object({
   sceneType: sceneTypeSchema,
@@ -19,10 +23,7 @@ export const filmSceneInputSchema = z.object({
   durationSeconds: z.number().positive().max(240),
   assetIds: z.array(z.string().uuid()),
   evidenceItemIds: z.array(z.string().uuid()),
-  authenticClip: z.object({
-    assetId: z.string().uuid(), evidenceItemId: z.string().uuid(),
-    startMs: z.number().int().nonnegative(), endMs: z.number().int().positive()
-  }).strict().nullable().optional(),
+  authenticClip: authenticClipSchema.nullable().optional(),
   motionPreset: motionPresetSchema,
   transitionPreset: transitionPresetSchema
 }).strict();
@@ -63,7 +64,8 @@ export const agentSceneSchema = z.object({
   sceneType: sceneTypeSchema, title: z.string(),
   narrationSentences: z.array(z.object({text: z.string().min(1), evidenceItemIds: z.array(z.string().uuid()).min(1)}).strict()),
   captionText: z.string(), durationSeconds: z.number().positive().max(240),
-  assetIds: z.array(z.string().uuid()), motionPreset: motionPresetSchema, transitionPreset: transitionPresetSchema
+  assetIds: z.array(z.string().uuid()), authenticClip: authenticClipSchema.nullable().optional(),
+  motionPreset: motionPresetSchema, transitionPreset: transitionPresetSchema
 }).strict();
 export const storyboardDraftSchema = z.object({
   title: z.string().min(1), theme: z.string().min(1), voiceProfile: voiceProfileSchema,
@@ -88,7 +90,7 @@ export interface StoryRepository {
   replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput, expectedRevision: number): Promise<Storyboard>;
 }
 
-type EvidenceReader = {listByProject(projectId: string): Promise<EvidenceItem[]>};
+type EvidenceReader = {listByProject(projectId: string): Promise<EvidenceItem[]>; findTranscriptSegment?(projectId: string, evidenceItemId: string): Promise<{assetId: string; startMs: number; endMs: number}|undefined>};
 export interface ProjectAssetReader {
   listReadyProjectAssetIds(projectId: string): Promise<string[]>;
   findReadyProjectAsset?(projectId: string, assetId: string): Promise<{id: string; projectId: string; kind: 'image'|'text'|'source_audio'|'creator_narration'; durationMs?: number|null} | undefined>;
@@ -145,6 +147,7 @@ export class StoryService {
     await this.assertCreator(projectId);
     const existing = await this.repository.findStoryboard(projectId);
     if (existing) {
+      for (const scene of existing.scenes) { await this.assertSceneEvidence(projectId, scene); await this.assertAuthenticClip(projectId, scene); }
       await this.assertSceneAssets(projectId, existing.scenes);
       return existing;
     }
@@ -153,6 +156,7 @@ export class StoryService {
     const draft = await this.agent.composeStoryboard({projectId, approvedEvidence});
     const voiceProfile = this.validateVoiceProfile(draft.voiceProfile, approvedEvidence);
     const scenes = draft.scenes.map((scene) => this.flattenAgentScene(scene, approvedEvidence));
+    for (const scene of scenes) { await this.assertSceneEvidence(projectId, scene); await this.assertAuthenticClip(projectId, scene); }
     await this.assertSceneAssets(projectId, scenes);
     const duration = scenes.reduce((total, scene) => total + scene.durationSeconds, 0);
     if (duration < 120 || duration > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
@@ -232,6 +236,7 @@ export class StoryService {
       scene: {
         sceneType: scene.sceneType, title: scene.title, captionText: scene.captionText,
         durationSeconds: scene.durationSeconds, assetIds: scene.assetIds,
+        authenticClip: scene.authenticClip ?? null,
         motionPreset: scene.motionPreset, transitionPreset: scene.transitionPreset,
         narrationSentences: scene.narrationText ? [{text: scene.narrationText, evidenceItemIds: scene.evidenceItemIds}] : []
       },
@@ -294,6 +299,8 @@ export class StoryService {
     if (!source || source.projectId !== projectId || source.kind !== 'transcript' || !['confirmed', 'corrected'].includes(source.verificationStatus) || !source.sourceAssetIds.includes(clip.assetId)) {
       throw new Error('AUTHENTIC_CLIP_EVIDENCE_REQUIRED');
     }
+    const segment = await this.evidence.findTranscriptSegment?.(projectId, clip.evidenceItemId);
+    if (!segment || segment.assetId !== clip.assetId || clip.startMs < segment.startMs || clip.endMs > segment.endMs) throw new Error('AUTHENTIC_CLIP_OUTSIDE_EVIDENCE_SEGMENT');
     const asset = await this.assets.findReadyProjectAsset?.(projectId, clip.assetId);
     if (!asset || !['source_audio', 'creator_narration'].includes(asset.kind) || !asset.durationMs || clip.endMs > asset.durationMs) throw new Error('AUTHENTIC_CLIP_INVALID');
   }

@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {and, eq, lte, or, sql} from 'drizzle-orm';
 
 import type {Database} from '../../server/db/client';
-import {evidenceItems, processingJobs} from '../../server/db/schema';
+import {evidenceItems, processingJobs, transcriptEvidenceSegments} from '../../server/db/schema';
 import type {EvidenceCandidate} from '../story/schemas';
 import type {EvidenceItem, VerificationStatus} from './schemas';
 
@@ -44,6 +44,8 @@ export interface EvidenceRepository {
   findById(id: string): Promise<EvidenceItem | undefined>;
   review(id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string): Promise<EvidenceItem>;
   listByProject(projectId: string): Promise<EvidenceItem[]>;
+  findTranscriptSegment(projectId: string, evidenceItemId: string): Promise<{assetId: string; startMs: number; endMs: number}|undefined>;
+  linkTranscriptSegment?(projectId: string, evidenceItemId: string, segment: {transcriptId: string; assetId: string; startMs: number; endMs: number}): Promise<void>;
 }
 
 const mapEvidence = (row: typeof evidenceItems.$inferSelect): EvidenceItem => ({
@@ -140,11 +142,17 @@ export class PostgresEvidenceRepository implements EvidenceRepository {
   async listByProject(projectId: string) {
     return (await this.database.query.evidenceItems.findMany({where: (table, {eq: equals}) => equals(table.projectId, projectId)})).map(mapEvidence);
   }
+  async findTranscriptSegment(projectId: string, evidenceItemId: string) {
+    const row = await this.database.query.transcriptEvidenceSegments.findFirst({where: (table, {and: all, eq: equals}) => all(equals(table.projectId, projectId), equals(table.evidenceItemId, evidenceItemId))});
+    return row && {assetId: row.assetId, startMs: row.startMs, endMs: row.endMs};
+  }
+  async linkTranscriptSegment(projectId: string, evidenceItemId: string, segment: {transcriptId: string; assetId: string; startMs: number; endMs: number}) { await this.database.insert(transcriptEvidenceSegments).values({projectId, evidenceItemId, ...segment}); }
 }
 
 export class InMemoryEvidenceRepository implements EvidenceRepository {
   private readonly evidence = new Map<string, EvidenceItem>();
   private readonly jobs = new Map<string, AnalysisJob>();
+  private readonly transcriptSegments = new Map<string, {projectId: string; assetId: string; startMs: number; endMs: number}>();
 
   async findActiveAnalysisJob(projectId: string) { return [...this.jobs.values()].find((job) => job.projectId === projectId && ['pending', 'processing'].includes(job.status)); }
   async createAnalysisJob(projectId: string) {
@@ -185,5 +193,7 @@ export class InMemoryEvidenceRepository implements EvidenceRepository {
     this.evidence.set(id, reviewed); return {...reviewed, sourceAssetIds: [...reviewed.sourceAssetIds]};
   }
   async listByProject(projectId: string) { return [...this.evidence.values()].filter((item) => item.projectId === projectId).map((item) => ({...item, sourceAssetIds: [...item.sourceAssetIds]})); }
+  async findTranscriptSegment(projectId: string, evidenceItemId: string) { const segment = this.transcriptSegments.get(evidenceItemId); return segment?.projectId === projectId ? {assetId: segment.assetId, startMs: segment.startMs, endMs: segment.endMs} : undefined; }
+  async linkTranscriptSegment(projectId: string, evidenceItemId: string, segment: {assetId: string; startMs: number; endMs: number}) { this.transcriptSegments.set(evidenceItemId, {projectId, ...segment}); }
   allJobsForProject(projectId: string) { return [...this.jobs.values()].filter((job) => job.projectId === projectId).map((job) => ({...job})); }
 }

@@ -18,6 +18,21 @@ const makeHarness = async () => {
 };
 
 describe('ProviderExecutor', () => {
+  it('prepares an exact consent-and-budget-bound run before deferred execution and rechecks consent', async () => {
+    const harness = await makeHarness(); const dispatch = vi.fn();
+    const metadata = {projectId: harness.projectId, provider: 'deepgram', model: 'nova-3', operation: 'transcribe' as const, dataCategories: ['source_audio'], canonicalInput: {assetId: crypto.randomUUID()}, estimatedCostMicros: 100, pricingVersion: 'dg-n3-pre-en-payg-20260714'};
+    const prepared = await harness.executor.prepare(metadata);
+    expect((await harness.runs.get(prepared.runId))?.status).toBe('reserved');
+    const valid = await harness.consents.findValid(harness.projectId, 'processing'); await harness.consents.invalidate(valid!.id, new Date());
+    await expect(harness.executor.executePrepared({...metadata, preparedRunId: prepared.runId, dispatch, loadResult: vi.fn(), persistResult: vi.fn()})).rejects.toThrow('PROCESSING_CONSENT_REQUIRED');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects worker metadata drift from the exact prepared run', async () => {
+    const harness = await makeHarness(); const metadata = {projectId: harness.projectId, provider: 'deepgram', model: 'nova-3', operation: 'transcribe' as const, dataCategories: ['source_audio'], canonicalInput: {assetId: crypto.randomUUID()}, estimatedCostMicros: 100, pricingVersion: 'v1'};
+    const prepared = await harness.executor.prepare(metadata);
+    await expect(harness.executor.executePrepared({...metadata, model: 'nova-future', preparedRunId: prepared.runId, dispatch: vi.fn(), loadResult: vi.fn(), persistResult: vi.fn()})).rejects.toThrow('PROVIDER_PREPARATION_MISMATCH');
+  });
   it('rechecks consent before beginDispatch and never calls the provider when invalidated', async () => {
     const harness = await makeHarness();
     const dispatch = vi.fn();

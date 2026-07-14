@@ -49,7 +49,7 @@ describe('CloudTasksQueue', () => {
   it('uses the transcription job id as a deterministic safe queue identity', async () => {
     const createTask = vi.fn().mockResolvedValue([{}]);
     const queue = new CloudTasksQueue({createTask}, {queuePath: 'queue', targetUrl: 'https://service.example/internal', audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'});
-    const task = {type: 'transcribe_asset' as const, projectId: crypto.randomUUID(), assetId: crypto.randomUUID(), jobId: crypto.randomUUID()};
+    const task = {type: 'transcribe_asset' as const, projectId: crypto.randomUUID(), assetId: crypto.randomUUID(), jobId: crypto.randomUUID(), providerRunId: crypto.randomUUID()};
     await queue.enqueue(task);
     const name = createTask.mock.calls[0][0].task.name as string;
     expect(name).toContain(task.jobId);
