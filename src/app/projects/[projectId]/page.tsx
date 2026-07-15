@@ -92,6 +92,14 @@ export default function ProjectPage({
   const [audit, setAudit] = useState<FactualityAuditResult | null>(null);
   const [auditActionsAvailable, setAuditActionsAvailable] = useState(true);
   const [approvalPending, setApprovalPending] = useState(false);
+  const [narrationProvider, setNarrationProvider] = useState<'deepgram'|'azure'>('deepgram');
+  const [narrationSampleId, setNarrationSampleId] = useState<string|null>(null);
+  const [narrationSampleApproved, setNarrationSampleApproved] = useState(false);
+  const [narrationSampleUrl, setNarrationSampleUrl] = useState<string|null>(null);
+  const [azurePermission, setAzurePermission] = useState(false);
+  const [creatorNarration, setCreatorNarration] = useState<File|null>(null);
+  const [creatorNarrationAssetId, setCreatorNarrationAssetId] = useState<string|null>(null);
+  const [creatorAudioAudit, setCreatorAudioAudit] = useState<FactualityAuditResult|null>(null);
   const auditEditGeneration = useRef(0);
   const displayedAuditId = useRef<string|null>(null);
   const approvalPendingRef = useRef(false);
@@ -148,7 +156,7 @@ export default function ProjectPage({
   const upload = async (
     body: Blob,
     file: {
-      kind: 'image' | 'text' | 'source_audio';
+      kind: 'image' | 'text' | 'source_audio' | 'creator_narration';
       name: string;
       contentType: string;
       size: number;
@@ -384,6 +392,31 @@ export default function ProjectPage({
     finally { approvalPendingRef.current = false; setApprovalPending(false); }
   };
 
+  const prepareNarrationSample = async () => {
+    const response = await fetch(`/api/projects/${projectId}/narration/sample`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({provider: narrationProvider})});
+    if (!response.ok) return setMessage(narrationProvider === 'azure' ? 'Renew your processing choice to include Microsoft Azure, then try again.' : 'The voice sample could not be prepared yet.');
+    const sample = await response.json() as {id: string}; const playback = await fetch(`/api/projects/${projectId}/narration/sample?sampleId=${encodeURIComponent(sample.id)}`); const signed = playback.ok ? await playback.json() as {url: string} : null; setNarrationSampleId(sample.id); setNarrationSampleUrl(signed?.url ?? null); setNarrationSampleApproved(false); setMessage('Your private voice sample is ready for review.');
+  };
+  const approveNarrationSample = async () => {
+    if (!narrationSampleId) return;
+    const response = await fetch(`/api/projects/${projectId}/narration/sample`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({sampleId: narrationSampleId})});
+    if (response.ok) { setNarrationSampleApproved(true); setMessage('Voice sample approved.'); } else setMessage('The story changed. Prepare and review a fresh sample.');
+  };
+  const createNarration = async () => {
+    if (!narrationSampleId || !narrationSampleApproved) return setMessage('Listen to and approve a fresh voice sample first.');
+    const selected = await fetch(`/api/projects/${projectId}/narration/selection`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kind: 'generated', provider: narrationProvider, sampleId: narrationSampleId})});
+    if (!selected.ok) return setMessage('The voice choice is no longer current. Prepare a fresh sample.');
+    const generated = await fetch(`/api/projects/${projectId}/narration/generate`, {method: 'POST'});
+    setMessage(generated.ok ? 'Narration is ready for the film.' : 'Narration paused safely. You can try again without losing completed scenes.');
+  };
+  const preserveCreatorNarration = async () => {
+    if (!creatorNarration) return; let assetId = creatorNarrationAssetId ?? undefined;
+    try { const durationMs = await readAudioDurationMs(creatorNarration); await upload(creatorNarration, {kind: 'creator_narration', name: creatorNarration.name, contentType: creatorNarration.type, size: creatorNarration.size, durationMs, reservationId: assetId}, () => undefined, (id) => { assetId = id; setCreatorNarrationAssetId(id); }); if (!assetId) throw new Error('UPLOAD_FAILED'); const response = await fetch(`/api/projects/${projectId}/transcription`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({assetId})}); setMessage(response.ok ? 'Your recording is preserved. Its exact transcript is being prepared for a separate story check.' : 'The recording is safe, but its transcript could not start yet.'); }
+    catch { setMessage('That recording could not be preserved. Please try again.'); }
+  };
+  const reviewCreatorNarration = async () => { if (!creatorNarrationAssetId) return; const response = await fetch(`/api/projects/${projectId}/narration/creator-audio/audit`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({assetId: creatorNarrationAssetId})}); if (!response.ok) return setMessage('The exact transcript is not ready or needs another review.'); const result = await response.json() as FactualityAuditResult; setCreatorAudioAudit(result); setMessage(result.status === 'passed' ? 'Your creator recording passed the story check.' : 'The creator recording includes wording that needs review.'); };
+  const chooseCreatorNarration = async () => { if (!creatorNarrationAssetId || !creatorAudioAudit || creatorAudioAudit.status !== 'passed') return; const approved = await fetch(`/api/projects/${projectId}/narration/creator-audio/approve`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({assetId: creatorNarrationAssetId, auditId: creatorAudioAudit.auditId, narrationHash: creatorAudioAudit.narrationHash, evidenceHash: creatorAudioAudit.evidenceHash})}); if (!approved.ok) return setMessage('The transcript changed. Run a fresh story check.'); const selected = await fetch(`/api/projects/${projectId}/narration/selection`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kind: 'creator', assetId: creatorNarrationAssetId})}); setMessage(selected.ok ? 'Your creator-provided recording is selected for the film.' : 'That recording could not be selected.'); };
+
   const saveScene = async (sceneId: string) => {
     if (!storyboard) return;
     const scene = storyboard.scenes.find((entry) => entry.id === sceneId);
@@ -509,7 +542,7 @@ export default function ProjectPage({
         documentVersion: '2026-07-14.1',
         providers: storage
           ? ['google_cloud_storage']
-          : ['google_gemini', 'deepgram', 'openai'],
+          : ['google_gemini', 'deepgram', 'openai', ...(azurePermission ? ['microsoft_azure'] : [])],
         dataCategories: storage
           ? ['original_media', 'derived_media']
           : processingConsentDataCategories,
@@ -547,6 +580,7 @@ export default function ProjectPage({
             <input type="checkbox" checked={storagePermission} onChange={(event) => setStoragePermission(event.target.checked)} />
             I have permission to upload and store this material.
           </label>
+          <label><input type="checkbox" checked={azurePermission} onChange={(event) => setAzurePermission(event.target.checked)} /> Include Microsoft Azure as an optional narration choice. Azure receives approved narration text only when I deliberately select it.</label>
           <button type="button" onClick={() => saveConsent('storage', storagePermission)}>Save storage choice</button>
         </section>
         <section aria-labelledby="processing-consent-title" className="record-card">
@@ -775,6 +809,18 @@ export default function ProjectPage({
               </li>)}</ul>}
               {audit.status === 'passed' ? <button type="button" disabled={!auditActionsAvailable || approvalPending} onClick={approveNarration}>{approvalPending ? 'Approving narration…' : 'Approve this exact narration'}</button> : <p>Edit the sentence or its sources, save the scene, then run a fresh review. Blocking findings cannot be skipped.</p>}
             </>}
+          </section>
+          <section className="record-card" aria-labelledby="voice-studio-title">
+            <h4 id="voice-studio-title">Choose the film voice</h4>
+            <p>Start with a short private sample. Nothing is narrated in full until you approve that sample.</p>
+            <label>Voice service<select value={narrationProvider} onChange={(event) => { setNarrationProvider(event.target.value as 'deepgram'|'azure'); setNarrationSampleId(null); setNarrationSampleUrl(null); setNarrationSampleApproved(false); }}><option value="deepgram">Arcas from Deepgram — recommended</option><option value="azure">Microsoft Azure — optional backup</option></select></label>
+            <p>{narrationProvider === 'deepgram' ? 'Deepgram receives only the exact narration you approved.' : 'Azure is never selected automatically. Renew your processing choice to include Microsoft before requesting a sample.'}</p>
+            <button type="button" onClick={prepareNarrationSample}>Prepare a short voice sample</button>
+            {narrationSampleUrl && <audio controls src={narrationSampleUrl}>Your browser cannot play this sample.</audio>}
+            {narrationSampleId && <button type="button" onClick={approveNarrationSample}>Approve this voice sample</button>}
+            <button type="button" disabled={!narrationSampleApproved} onClick={createNarration}>Create the film narration</button>
+            <p><small>{narrationProvider === 'deepgram' ? 'Narration created with a generated voice from Deepgram.' : 'Narration created with a generated voice from Microsoft Azure.'} Creator recordings are always labeled creator-provided.</small></p>
+            <details><summary>Use my own recording instead</summary><p>Your recording is transcribed with Deepgram Nova-3, then its exact transcript is checked against the approved family record by OpenAI before it can be selected.</p><input type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg" onChange={(event) => { setCreatorNarration(event.target.files?.[0] ?? null); setCreatorNarrationAssetId(null); setCreatorAudioAudit(null); }} /><button type="button" disabled={!creatorNarration} onClick={preserveCreatorNarration}>Preserve and transcribe my recording</button><button type="button" disabled={!creatorNarrationAssetId} onClick={reviewCreatorNarration}>Review its exact transcript against the record</button><button type="button" disabled={creatorAudioAudit?.status !== 'passed'} onClick={chooseCreatorNarration}>Use this creator-provided recording</button></details>
           </section>
         </section>}
       </section>

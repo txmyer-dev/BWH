@@ -13,8 +13,11 @@ const schema = z.object({
   GEMINI_PAID_PROJECT_ID: z.string().min(1).optional(),
   DEEPGRAM_API_KEY: z.string().min(1).optional(),
   DEEPGRAM_TRANSCRIPTION_MODEL: z.string().min(1).default('nova-3'),
+  DEEPGRAM_NARRATION_MODEL: z.string().min(1).default('aura-2-arcas-en'),
   AZURE_SPEECH_KEY: z.string().min(1).optional(),
   AZURE_SPEECH_REGION: z.string().min(1).optional(),
+  AZURE_SPEECH_VOICE: z.string().min(1).optional(),
+  AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS: z.coerce.number().int().positive().optional(),
   GCP_PROJECT_ID: z.string().min(1),
   GCP_LOCATION: z.string().default('us-central1'),
   CLOUD_TASKS_QUEUE_PATH: z.string().min(1).optional(),
@@ -29,6 +32,10 @@ const schema = z.object({
 }).superRefine((value, context) => {
   if (value.NODE_ENV === 'production' && !value.PROVIDER_FINGERPRINT_SECRET) {
     context.addIssue({code: 'custom', path: ['PROVIDER_FINGERPRINT_SECRET'], message: 'PROVIDER_FINGERPRINT_SECRET is required in production'});
+  }
+  const azure = [value.AZURE_SPEECH_KEY, value.AZURE_SPEECH_REGION, value.AZURE_SPEECH_VOICE, value.AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS];
+  if (azure.some((item) => item !== undefined) && azure.some((item) => item === undefined)) {
+    context.addIssue({code: 'custom', path: ['AZURE_SPEECH_KEY'], message: 'AZURE_SPEECH configuration and AZURE_TTS_PRICE must be complete'});
   }
 });
 

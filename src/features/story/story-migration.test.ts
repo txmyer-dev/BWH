@@ -7,7 +7,7 @@ const directory = join(process.cwd(), 'drizzle');
 describe('storyboard revision migration history', () => {
   it('upgrades an existing 0000 database with a truthful 0001 ALTER', () => {
     const migrations = readdirSync(directory).filter((name) => /^\d+_.+\.sql$/.test(name)).sort();
-    expect(migrations).toHaveLength(9);
+    expect(migrations).toHaveLength(10);
     const initial = readFileSync(join(directory, migrations[0]), 'utf8');
     const revision = readFileSync(join(directory, migrations[1]), 'utf8');
     expect(initial).not.toContain('"revision" integer');
@@ -81,7 +81,8 @@ describe('storyboard revision migration history', () => {
       {idx: 5, tag: '0005_retire_legacy_analysis_jobs'},
       {idx: 6, tag: '0006_provider_run_results'},
       {idx: 7, tag: '0007_asset_transcripts'},
-      {idx: 8, tag: '0008_factuality_audits'}
+      {idx: 8, tag: '0008_factuality_audits'},
+      {idx: 9, tag: '0009_narration_tracks'}
     ]);
     expect(initial.tables['public.storyboards'].columns).not.toHaveProperty('revision');
     expect(next.prevId).toBe(initial.id);

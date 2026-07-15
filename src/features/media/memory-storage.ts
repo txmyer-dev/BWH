@@ -11,6 +11,11 @@ export class MemoryStorage implements MediaStorage {
     contentType?: string;
   }> = [];
 
+  async writePrivateObject(objectKey: string, bytes: Uint8Array, contentType: string) {
+    if (this.objects.has(objectKey)) throw new Error('OBJECT_ALREADY_EXISTS');
+    this.objects.set(objectKey, {size: bytes.byteLength, contentType, data: Buffer.from(bytes)});
+  }
+
   async createUploadUrl(input: {
     objectKey: string;
     contentType: string;

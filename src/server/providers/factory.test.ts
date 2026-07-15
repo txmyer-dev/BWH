@@ -43,6 +43,11 @@ describe('createProviderServices', () => {
     expect(createDeepgramClient).toHaveBeenCalledWith('deepgram-secret');
     expect(createProviderServices(env, deps as never).deepgramTranscriber).toBeUndefined();
   });
+  it('constructs Arcas narration independently and leaves Azure undefined unless all explicit settings exist', () => {
+    const services = createProviderServices({...env, DEEPGRAM_API_KEY: 'deepgram-secret', DEEPGRAM_NARRATION_MODEL: 'aura-2-arcas-en'}, deps as never);
+    expect(services.narrationProviders.deepgram?.model).toBe('aura-2-arcas-en');
+    expect(services.narrationProviders.azure).toBeUndefined();
+  });
   it('fails closed for an unpriced live Deepgram transcription model', () => {
     expect(() => createProviderServices({...env, DEEPGRAM_API_KEY: 'secret', DEEPGRAM_TRANSCRIPTION_MODEL: 'nova-future'}, {...deps, createDeepgramClient: vi.fn(() => ({listen: {prerecorded: {transcribeFile: vi.fn()}}}))} as never)).toThrow('DEEPGRAM_TRANSCRIPTION_MODEL_UNPRICED');
   });

@@ -23,4 +23,19 @@ export class AuditService {
     if (audit.narrationHash !== narrationHash || audit.evidenceHash !== evidenceHash || audit.storyboardRevision !== storyboardRevision) throw new Error('AUDIT_HASH_MISMATCH');
     return this.repository.approve(projectId, audit);
   }
+  async requestCreatorAudioAudit(projectId: string, assetId: string) {
+    await this.assertCreator(projectId);
+    const snapshot = await this.repository.loadCreatorAudioSnapshot(projectId, assetId);
+    const evidenceHash = sha256Canonical(snapshot.evidence); const narrationHash = sha256Canonical({text: snapshot.narration[0]?.text ?? ''});
+    return this.auditor.audit({...snapshot, evidenceHash, narrationHash});
+  }
+  async approveCreatorAudioTranscript(projectId: string, assetId: string, auditId: string, narrationHash: string, evidenceHash: string) {
+    await this.assertCreator(projectId); const audit = await this.repository.findById(projectId, auditId);
+    if (!audit || audit.auditScope !== 'creator_audio' || audit.assetId !== assetId || audit.status !== 'passed' || audit.findings.some((finding) => finding.blocking)) throw new Error('CREATOR_AUDIO_AUDIT_REQUIRED');
+    const current = await this.repository.loadCreatorAudioSnapshot(projectId, assetId);
+    const currentNarrationHash = sha256Canonical({text: current.narration[0]?.text ?? ''}); const currentEvidenceHash = sha256Canonical(current.evidence);
+    if (this.expectedContract && (audit.auditPromptVersion !== this.expectedContract.auditPromptVersion || audit.auditSchemaVersion !== this.expectedContract.auditSchemaVersion || audit.model !== this.expectedContract.model)) throw new Error('AUDIT_CONTRACT_STALE');
+    if (audit.narrationHash !== narrationHash || audit.evidenceHash !== evidenceHash || audit.narrationHash !== currentNarrationHash || audit.evidenceHash !== currentEvidenceHash || audit.transcriptId !== current.transcriptId || audit.storyboardRevision !== current.storyboardRevision) throw new Error('AUDIT_HASH_MISMATCH');
+    return this.repository.approveCreatorAudio(projectId, assetId, audit);
+  }
 }

@@ -1,0 +1,2 @@
+import {readFileSync} from 'node:fs'; import {join} from 'node:path'; import {describe, expect, it} from 'vitest';
+describe('narration migration', () => { it('moves only untouched pre-narration OpenAI defaults to Deepgram', () => { const sql = readFileSync(join(process.cwd(), 'drizzle/0009_narration_tracks.sql'), 'utf8'); expect(sql).toContain("SET DEFAULT 'deepgram'"); expect(sql).toContain('"audio_approved_at" IS NULL'); expect(sql).toContain('"narration_track_selection" IS NULL'); expect(sql).toContain('NOT EXISTS'); }); });

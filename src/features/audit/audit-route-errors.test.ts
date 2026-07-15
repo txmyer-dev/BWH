@@ -4,6 +4,10 @@ import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 
 describe('safe audit route errors', () => {
+  it('maps creator recording gates to recoverable conflicts', () => {
+    expect(safeAuditRouteError(new Error('CREATOR_AUDIO_TRANSCRIPT_REQUIRED'), 'audit')).toEqual({code: 'CREATOR_AUDIO_TRANSCRIPT_REQUIRED', status: 409});
+    expect(safeAuditRouteError(new Error('CREATOR_AUDIO_AUDIT_REQUIRED'), 'approval')).toEqual({code: 'CREATOR_AUDIO_AUDIT_REQUIRED', status: 409});
+  });
   it('maps known application failures and never returns raw provider or secret text', () => {
     expect(safeAuditRouteError(new Error('PROJECT_FORBIDDEN'), 'audit')).toEqual({code: 'PROJECT_FORBIDDEN', status: 403});
     const secret = safeAuditRouteError(new Error('OpenAI 401 sk-secret-family-data'), 'audit');

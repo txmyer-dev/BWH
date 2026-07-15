@@ -78,4 +78,13 @@ describe('AuditService', () => {
     const service = new AuditService(repository, {audit: async () => audit}, async () => undefined, {auditPromptVersion: 'current', auditSchemaVersion: 'schema', model: 'gpt-5.6'});
     await expect(service.approveNarrationText(projectId, audit.auditId, audit.narrationHash, audit.evidenceHash, audit.storyboardRevision)).rejects.toThrow('AUDIT_CONTRACT_STALE');
   });
+
+  it('audits and approves the actual creator narration transcript as a distinct target', async () => {
+    const repository = new InMemoryAuditRepository(makeSnapshot()); const assetId = crypto.randomUUID();
+    repository.seedCreatorAudio({projectId, assetId, transcriptId: crypto.randomUUID(), transcriptText: 'The actual Nova-3 words.'});
+    const service = new AuditService(repository, {audit: async (value) => repository.seedAudit({...value, auditId: crypto.randomUUID(), providerRunId: crypto.randomUUID(), status: 'passed', findings: []})}, async () => undefined);
+    const audit = await service.requestCreatorAudioAudit(projectId, assetId);
+    expect(audit).toMatchObject({auditScope: 'creator_audio', assetId});
+    await expect(service.approveCreatorAudioTranscript(projectId, assetId, audit.auditId, audit.narrationHash, audit.evidenceHash)).resolves.toMatchObject({creatorAudioApproved: true});
+  });
 });

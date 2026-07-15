@@ -18,7 +18,14 @@ describe('parseEnv', () => {
       PROVIDER_DEFAULT_BUDGET_MICROS: 5_000_000,
       PROVIDER_DEFAULT_REQUEST_BUDGET: 100
       ,DEEPGRAM_TRANSCRIPTION_MODEL: 'nova-3'
+      ,DEEPGRAM_NARRATION_MODEL: 'aura-2-arcas-en'
     });
+  });
+
+  it('requires complete Azure speech configuration and an explicit positive price', () => {
+    expect(() => parseEnv({...requiredEnv, AZURE_SPEECH_KEY: 'key'})).toThrow('AZURE_SPEECH');
+    expect(() => parseEnv({...requiredEnv, AZURE_SPEECH_KEY: 'key', AZURE_SPEECH_REGION: 'eastus', AZURE_SPEECH_VOICE: 'voice'})).toThrow('AZURE_TTS_PRICE');
+    expect(parseEnv({...requiredEnv, AZURE_SPEECH_KEY: 'key', AZURE_SPEECH_REGION: 'eastus', AZURE_SPEECH_VOICE: 'voice', AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS: '15000000'}).AZURE_SPEECH_VOICE).toBe('voice');
   });
 
   it('requires a production fingerprint secret and validates positive control-plane values', () => {

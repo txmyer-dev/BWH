@@ -1,4 +1,5 @@
 export interface MediaStorage {
+  writePrivateObject(objectKey: string, bytes: Uint8Array, contentType: string): Promise<void>;
   createUploadUrl(input: {
     objectKey: string;
     contentType: string;

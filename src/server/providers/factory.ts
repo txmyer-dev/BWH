@@ -1,6 +1,7 @@
 import {GoogleGenAI} from '@google/genai';
 import {DeepgramClient as DeepgramSdkClient} from '@deepgram/sdk';
 import OpenAI from 'openai';
+import * as SpeechSDK from 'microsoft-cognitiveservices-speech-sdk';
 
 import {GeminiStoryAgent, PostgresProviderStructuredResultStore, geminiPricing, type GeminiClient, type ProviderStructuredResultStore} from '../../features/story/gemini-story-agent';
 import {PostgresConsentRepository} from '../../features/consent/consent-repository';
@@ -16,6 +17,8 @@ import {DeepgramTranscriber, type DeepgramClient, type DeepgramResponse} from '.
 import {deepgramTranscriptionPricing} from '../../features/transcription/transcription-service';
 import {OpenAIFactualityAuditor, openAIAuditPricing, type OpenAIAuditClient} from '../../features/audit/openai-factuality-auditor';
 import {PostgresAuditRepository, type AuditRepository} from '../../features/audit/audit-repository';
+import {DeepgramNarration} from '../../features/narration/deepgram-narration';
+import {AzureNarration, type AzureSpeechClient} from '../../features/narration/azure-narration';
 
 type ProviderEnvironment = {
   NODE_ENV: 'development'|'test'|'production';
@@ -27,6 +30,11 @@ type ProviderEnvironment = {
   GEMINI_PAID_PROJECT_ID?: string;
   DEEPGRAM_API_KEY?: string;
   DEEPGRAM_TRANSCRIPTION_MODEL?: string;
+  DEEPGRAM_NARRATION_MODEL?: string;
+  AZURE_SPEECH_KEY?: string;
+  AZURE_SPEECH_REGION?: string;
+  AZURE_SPEECH_VOICE?: string;
+  AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS?: number;
   OPENAI_API_KEY?: string;
   OPENAI_AUDIT_MODEL?: string;
   PROVIDER_FINGERPRINT_SECRET?: string;
@@ -43,6 +51,7 @@ type ProviderDependencies = {
   createDeepgramClient?: (apiKey: string) => DeepgramClient;
   createOpenAIClient?: (apiKey: string | undefined) => OpenAIAuditClient;
   auditRepository?: AuditRepository;
+  createAzureSpeechClient?: (key: string, region: string, voice: string) => AzureSpeechClient;
 };
 
 export const createProviderServices = (env: ProviderEnvironment, dependencies: ProviderDependencies) => {
@@ -87,10 +96,28 @@ export const createProviderServices = (env: ProviderEnvironment, dependencies: P
   }))(env.OPENAI_API_KEY) : undefined;
   if (openAIClient) openAIAuditPricing(openAIModel);
   const auditRepository = dependencies.auditRepository ?? (dependencies.database ? new PostgresAuditRepository(dependencies.database) : undefined);
+  const narrationModel = env.DEEPGRAM_NARRATION_MODEL ?? 'aura-2-arcas-en';
+  if (narrationModel !== 'aura-2-arcas-en') throw new Error('DEEPGRAM_NARRATION_MODEL_UNPRICED');
+  const deepgramNarration = env.DEEPGRAM_API_KEY ? new DeepgramNarration(env.DEEPGRAM_API_KEY, {model: narrationModel}) : undefined;
+  const azureComplete = Boolean(env.AZURE_SPEECH_KEY && env.AZURE_SPEECH_REGION && env.AZURE_SPEECH_VOICE && env.AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS);
+  const azureClient = azureComplete ? (dependencies.createAzureSpeechClient ?? ((key: string, region: string, voice: string): AzureSpeechClient => {
+    let active: SpeechSDK.SpeechSynthesizer | undefined;
+    return {
+      synthesize: ({text}) => new Promise((resolve, reject) => {
+        const config = SpeechSDK.SpeechConfig.fromSubscription(key, region); config.speechSynthesisVoiceName = voice;
+        config.speechSynthesisOutputFormat = SpeechSDK.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm;
+        active = new SpeechSDK.SpeechSynthesizer(config);
+        active.speakTextAsync(text, (result) => { const bytes = new Uint8Array(result.audioData); active?.close(); active = undefined; if (result.reason !== SpeechSDK.ResultReason.SynthesizingAudioCompleted) reject(new Error('AZURE_TTS_FAILED')); else resolve({bytes}); }, (error) => { active?.close(); active = undefined; reject(error); });
+      }),
+      stop: () => { active?.close(); active = undefined; }
+    };
+  }))(env.AZURE_SPEECH_KEY!, env.AZURE_SPEECH_REGION!, env.AZURE_SPEECH_VOICE!) : undefined;
   return {
     executor,
     storyAgent: new GeminiStoryAgent(client, {model: env.GEMINI_STORY_MODEL}, executor, results, artifacts, listReadyAssetIds),
     deepgramTranscriber: deepgramClient ? new DeepgramTranscriber(deepgramClient, {model: env.DEEPGRAM_TRANSCRIPTION_MODEL!}) : undefined,
-    factualityAuditor: openAIClient && auditRepository ? new OpenAIFactualityAuditor(openAIClient, {model: openAIModel}, executor, results, auditRepository) : undefined
+    factualityAuditor: openAIClient && auditRepository ? new OpenAIFactualityAuditor(openAIClient, {model: openAIModel}, executor, results, auditRepository) : undefined,
+    narrationProviders: {deepgram: deepgramNarration, azure: azureClient ? new AzureNarration(azureClient, {voice: env.AZURE_SPEECH_VOICE!}) : undefined},
+    azureTtsPriceMicrosPerMillionCharacters: env.AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS
   };
 };

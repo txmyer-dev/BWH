@@ -9,6 +9,10 @@ export class GcsMediaStorage implements MediaStorage {
     this.bucket = storage.bucket(bucketName);
   }
 
+  async writePrivateObject(objectKey: string, bytes: Uint8Array, contentType: string) {
+    await this.bucket.file(objectKey).save(Buffer.from(bytes), {contentType, resumable: false, preconditionOpts: {ifGenerationMatch: 0}});
+  }
+
   async createUploadUrl(input: {
     objectKey: string;
     contentType: string;

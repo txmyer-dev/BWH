@@ -21,6 +21,9 @@ export type FactualityAuditInput = {
   narrationHash: string;
   evidence: {id: string; claim: string; sourceExcerpt: string; sourceAssetIds: string[]}[];
   narration: {sceneId: string; text: string; evidenceItemIds: string[]}[];
+  auditScope?: 'narration_text'|'creator_audio';
+  assetId?: string;
+  transcriptId?: string;
 };
 export type FactualityAuditResult = {
   auditId: string;
@@ -35,4 +38,7 @@ export type FactualityAuditResult = {
   auditPromptVersion: string;
   auditSchemaVersion: string;
   model: string;
+  auditScope?: 'narration_text'|'creator_audio';
+  assetId?: string;
+  transcriptId?: string;
 };

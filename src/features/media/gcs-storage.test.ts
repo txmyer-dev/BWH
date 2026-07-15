@@ -4,6 +4,12 @@ import {describe, expect, it} from 'vitest';
 import {GcsMediaStorage} from './gcs-storage';
 
 describe('GcsMediaStorage', () => {
+  it('writes generated audio privately with create-only fencing', async () => {
+    let saved: unknown;
+    const fakeStorage = {bucket: () => ({file: () => ({save: async (_bytes: Uint8Array, options: unknown) => { saved = options; }})})} as unknown as Storage;
+    await new GcsMediaStorage('private-bucket', fakeStorage).writePrivateObject('projects/p/narration/run/sample.wav', new Uint8Array([1]), 'audio/wav');
+    expect(saved).toMatchObject({contentType: 'audio/wav', resumable: false, preconditionOpts: {ifGenerationMatch: 0}});
+  });
   it('signs create-only V4 upload URLs', async () => {
     let signedOptions: unknown;
     const file = {

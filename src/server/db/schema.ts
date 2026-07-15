@@ -105,6 +105,8 @@ export const assets = pgTable(
       withTimezone: true
     }),
     metadata: jsonb('metadata').default({}).notNull(),
+    creatorTranscriptAuditId: uuid('creator_transcript_audit_id'),
+    creatorTranscriptApprovalHash: varchar('creator_transcript_approval_hash', {length: 64}),
     ...timestamps
   },
   (table) => [
@@ -194,7 +196,7 @@ export const storyboards = pgTable(
     status: varchar('status', {length: 30}).default('draft').notNull(),
     dedication: text('dedication'),
     narrationSource: varchar('narration_source', {length: 20})
-      .default('openai')
+      .default('deepgram')
       .notNull(),
     narratorVoice: varchar('narrator_voice', {length: 80}),
     creatorNarrationAssetId: uuid('creator_narration_asset_id').references(
@@ -326,11 +328,62 @@ export const factualityAudits = pgTable('factuality_audits', {
   auditPromptVersion: varchar('audit_prompt_version', {length: 40}).notNull(),
   auditSchemaVersion: varchar('audit_schema_version', {length: 40}).notNull(),
   model: varchar('model', {length: 120}).notNull(),
+  auditScope: varchar('audit_scope', {length: 30}).default('narration_text').notNull(),
+  creatorNarrationAssetId: uuid('creator_narration_asset_id').references(() => assets.id, {onDelete: 'cascade'}),
+  creatorTranscriptId: uuid('creator_transcript_id').references(() => assetTranscripts.id, {onDelete: 'cascade'}),
   createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
 }, (table) => [
   check('factuality_audits_status_check', sql`${table.status} IN ('passed','blocked')`),
+  check('factuality_audits_scope_check', sql`${table.auditScope} IN ('narration_text','creator_audio')`),
   uniqueIndex('factuality_audits_provider_run_unique').on(table.providerRunId),
   index('factuality_audits_project_storyboard_idx').on(table.projectId, table.storyboardId)
+]);
+
+export const narrationSamples = pgTable('narration_samples', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  storyboardId: uuid('storyboard_id').notNull().references(() => storyboards.id, {onDelete: 'cascade'}),
+  providerRunId: uuid('provider_run_id').notNull().references(() => providerRuns.id, {onDelete: 'cascade'}),
+  provider: varchar('provider', {length: 30}).notNull(),
+  model: varchar('model', {length: 120}).notNull(),
+  voice: varchar('voice', {length: 120}).notNull(),
+  sourceTextHash: varchar('source_text_hash', {length: 64}).notNull(),
+  auditId: uuid('audit_id').notNull().references(() => factualityAudits.id, {onDelete: 'cascade'}),
+  narrationHash: varchar('narration_hash', {length: 64}).notNull(),
+  objectKey: text('object_key').notNull(),
+  durationMs: integer('duration_ms').notNull(),
+  approvedAt: timestamp('approved_at', {withTimezone: true}),
+  createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
+}, (table) => [
+  uniqueIndex('narration_samples_provider_run_unique').on(table.providerRunId),
+  uniqueIndex('narration_samples_object_key_unique').on(table.objectKey),
+  check('narration_samples_provider_check', sql`${table.provider} IN ('deepgram','azure')`),
+  check('narration_samples_duration_check', sql`${table.durationMs} > 0`),
+  index('narration_samples_project_idx').on(table.projectId)
+]);
+
+export const narrationTracks = pgTable('narration_tracks', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  storyboardId: uuid('storyboard_id').notNull().references(() => storyboards.id, {onDelete: 'cascade'}),
+  sceneId: uuid('scene_id').notNull().references(() => filmScenes.id, {onDelete: 'cascade'}),
+  providerRunId: uuid('provider_run_id').notNull().references(() => providerRuns.id, {onDelete: 'cascade'}),
+  provider: varchar('provider', {length: 30}).notNull(),
+  model: varchar('model', {length: 120}).notNull(),
+  voice: varchar('voice', {length: 120}).notNull(),
+  sourceTextHash: varchar('source_text_hash', {length: 64}).notNull(),
+  auditId: uuid('audit_id').notNull().references(() => factualityAudits.id, {onDelete: 'cascade'}),
+  narrationHash: varchar('narration_hash', {length: 64}).notNull(),
+  objectKey: text('object_key').notNull(),
+  durationMs: integer('duration_ms').notNull(),
+  createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
+}, (table) => [
+  uniqueIndex('narration_tracks_provider_run_unique').on(table.providerRunId),
+  uniqueIndex('narration_tracks_object_key_unique').on(table.objectKey),
+  uniqueIndex('narration_tracks_reuse_unique').on(table.projectId, table.sceneId, table.provider, table.model, table.voice, table.sourceTextHash),
+  check('narration_tracks_provider_check', sql`${table.provider} IN ('deepgram','azure')`),
+  check('narration_tracks_duration_check', sql`${table.durationMs} > 0`),
+  index('narration_tracks_project_storyboard_idx').on(table.projectId, table.storyboardId)
 ]);
 
 export const providerRunResults = pgTable('provider_run_results', {

@@ -80,8 +80,8 @@ export class OpenAIFactualityAuditor implements FactualityAuditor {
     const reservationMicros = Math.max(1, Math.ceil(estimatedInputTokens * this.pricing.input + maxOutputTokens * this.pricing.output));
     const executed = await this.executor.execute({
       projectId: input.projectId, provider: 'openai', model: this.config.model, operation: 'audit_narration',
-      dataCategories: ['approved_narration_text', 'source_references'],
-      canonicalInput: {storyboardId: input.storyboardId, storyboardRevision: input.storyboardRevision, evidenceHash: input.evidenceHash, narrationHash: input.narrationHash, ...contract},
+      dataCategories: [input.auditScope === 'creator_audio' ? 'creator_narration' : 'approved_narration_text', 'source_references'],
+      canonicalInput: {storyboardId: input.storyboardId, storyboardRevision: input.storyboardRevision, evidenceHash: input.evidenceHash, narrationHash: input.narrationHash, ...(input.auditScope === 'creator_audio' ? {auditScope: input.auditScope, assetId: input.assetId, transcriptId: input.transcriptId} : {}), ...contract},
       estimatedCostMicros: reservationMicros, pricingVersion: this.pricing.version,
       dispatch: async ({signal}) => {
         const response = await this.client.responses.parse({
@@ -117,7 +117,7 @@ export class OpenAIFactualityAuditor implements FactualityAuditor {
       }
     });
     const audit = await this.audits.findByProviderRun(input.projectId, executed.runId);
-    if (!audit || audit.storyboardId !== input.storyboardId || audit.storyboardRevision !== input.storyboardRevision || audit.evidenceHash !== input.evidenceHash || audit.narrationHash !== input.narrationHash || audit.auditPromptVersion !== contract.auditPromptVersion || audit.auditSchemaVersion !== contract.auditSchemaVersion || audit.model !== contract.model) throw new Error('AUDIT_RESULT_NOT_AVAILABLE');
+    if (!audit || audit.storyboardId !== input.storyboardId || audit.storyboardRevision !== input.storyboardRevision || audit.evidenceHash !== input.evidenceHash || audit.narrationHash !== input.narrationHash || audit.auditPromptVersion !== contract.auditPromptVersion || audit.auditSchemaVersion !== contract.auditSchemaVersion || audit.model !== contract.model || (input.auditScope === 'creator_audio' && (audit.auditScope !== 'creator_audio' || audit.assetId !== input.assetId || audit.transcriptId !== input.transcriptId))) throw new Error('AUDIT_RESULT_NOT_AVAILABLE');
     return audit;
   }
 }
