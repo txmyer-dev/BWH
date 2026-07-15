@@ -57,11 +57,13 @@ export class TranscriptionService {
 
   async processTask(task: TranscriptionTask) {
     const providerStatus = await this.executor.getRunStatus?.(task.providerRunId);
-    const allowStaleRecovery = providerStatus === 'reserved' || providerStatus === 'processing' || providerStatus === 'completed';
+    const allowStaleRecovery = providerStatus === 'reserved' || providerStatus === 'processing' || providerStatus === 'completed' || providerStatus === 'failed';
     const claim = await this.transcripts.claimJob(task.jobId, task.projectId, task.assetId, task.providerRunId, 60_000, allowStaleRecovery);
     if (claim.outcome !== 'claimed') return claim.outcome;
+    if (providerStatus === 'failed') { await this.transcripts.failJob(task.jobId, claim.leaseToken); throw new Error('TRANSCRIPTION_FAILED'); }
     try { await this.process({projectId: task.projectId, assetId: task.assetId, providerRunId: task.providerRunId}); await this.transcripts.completeJob(task.jobId, claim.leaseToken); return 'completed' as const; }
-    catch {
+    catch (error) {
+      if (error instanceof Error && error.message === 'PROVIDER_PREPARED_CONSENT_CHANGED') { await this.transcripts.retireConsentChanged(task.jobId, task.projectId, task.providerRunId); return 'retired_consent' as const; }
       const status = await this.executor.getRunStatus?.(task.providerRunId);
       if (status === 'failed') { await this.transcripts.failJob(task.jobId, claim.leaseToken); throw new Error('TRANSCRIPTION_FAILED'); }
       if (status === 'ambiguous' || status === 'dispatching' || status === 'superseded_ambiguous') { await this.transcripts.markAmbiguousJob(task.jobId, claim.leaseToken); return 'ambiguous' as const; }

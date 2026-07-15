@@ -8,7 +8,8 @@ export const providerRunsLoadError = (message: string): SafeRouteError =>
 export const providerRetryError = (message: string): SafeRouteError => {
   if (message === 'PROJECT_FORBIDDEN') return {code: message, status: 403};
   if (message === 'PROVIDER_RUN_NOT_FOUND') return {code: message, status: 404};
-  if (['PROVIDER_RUN_NOT_AMBIGUOUS','PROJECT_PROVIDER_BUDGET_EXCEEDED','PROJECT_PROVIDER_REQUEST_BUDGET_EXCEEDED','PROCESSING_CONSENT_REQUIRED'].includes(message)) return {code: message, status: 409};
+  if (['PROVIDER_RUN_NOT_AMBIGUOUS','PROJECT_PROVIDER_BUDGET_EXCEEDED','PROJECT_PROVIDER_REQUEST_BUDGET_EXCEEDED','PROCESSING_CONSENT_REQUIRED','TRANSCRIPTION_RETRY_SOURCE_INVALID','TRANSCRIPTION_RETRY_RUN_INVALID','PROJECT_TRANSCRIPTION_BUSY'].includes(message)) return {code: message, status: 409};
+  if (['PROVIDER_RETRY_QUEUE_NOT_CONFIGURED','PROVIDER_RETRY_ENQUEUE_FAILED'].includes(message)) return {code: message, status: 503};
   return {code: 'PROVIDER_RETRY_FAILED', status: 500};
 };
 

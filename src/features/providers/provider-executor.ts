@@ -18,13 +18,13 @@ export class DefaultProviderExecutor implements ProviderExecutor {
   async executePrepared<T>(input: PreparedProviderExecutionInput<T>): Promise<ProviderExecution<T>> {
     const existing = await this.runs.assertPrepared(input.preparedRunId, input);
     const dispatchConsent = await this.consents.assertProcessingConsent(input.projectId, input.provider as ProcessingProvider, input.dataCategories);
-    if (dispatchConsent.id !== existing.consentId) throw new Error('PROCESSING_CONSENT_REQUIRED');
+    if (dispatchConsent.id !== existing.consentId) throw new Error('PROVIDER_PREPARED_CONSENT_CHANGED');
     if (existing.status === 'completed') return {runId: existing.id, cacheHit: true, result: await input.loadResult(existing.id)};
     const claim = await this.runs.claim(existing.id);
-    if (dispatchConsent.id !== claim.consentId) throw new Error('PROCESSING_CONSENT_REQUIRED');
+    if (dispatchConsent.id !== claim.consentId) throw new Error('PROVIDER_PREPARED_CONSENT_CHANGED');
     await this.runs.beginDispatch(claim, async () => {
       const finalConsent = await this.consents.assertProcessingConsent(input.projectId, input.provider as ProcessingProvider, input.dataCategories);
-      if (finalConsent.id !== claim.consentId) throw new Error('PROCESSING_CONSENT_REQUIRED');
+      if (finalConsent.id !== claim.consentId) throw new Error('PROVIDER_PREPARED_CONSENT_CHANGED');
     });
     const controller = new AbortController();
     const heartbeat = setInterval(() => { void this.runs.heartbeat(claim).catch(() => controller.abort()); }, Math.max(1_000, Math.floor((claim.dispatchDeadlineAt.getTime() - Date.now()) / 2)));

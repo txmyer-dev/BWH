@@ -29,10 +29,10 @@ const setup = (source = asset(), options: {prepareError?: string; queue?: Inline
   const calls: Array<Record<string, unknown>> = [];
   const releasedRuns: string[] = [];
   const usages: unknown[] = [];
-  const runId = randomUUID(); let executions = 0;
+  let runId = randomUUID(); let executions = 0;
   let status: 'reserved'|'processing'|'dispatching'|'completed'|'failed'|'ambiguous' = 'reserved';
   const run = async <T>(input: ProviderExecutionInput<T>) => {
-    calls.push(input as unknown as Record<string, unknown>); if (options.executionError) { status = options.executionError === 'ambiguous' ? 'ambiguous' : options.executionError === 'in_flight' ? 'processing' : 'failed'; throw new Error('provider'); }
+    calls.push(input as unknown as Record<string, unknown>); if (options.executionError) { status = options.executionError === 'ambiguous' ? 'ambiguous' : options.executionError === 'in_flight' ? 'processing' : options.executionError === 'consent_changed' ? 'reserved' : 'failed'; throw new Error(options.executionError === 'consent_changed' ? 'PROVIDER_PREPARED_CONSENT_CHANGED' : 'provider'); }
     if (executions++ > 0) return {runId, cacheHit: true, result: await input.loadResult(runId)};
     const dispatched = await input.dispatch({runId, providerIdempotencyKey: 'safe-id', signal: new AbortController().signal});
     usages.push(dispatched.usage);
@@ -53,7 +53,7 @@ const setup = (source = asset(), options: {prepareError?: string; queue?: Inline
       segments: [{startMs: 0, endMs: 1000, text: 'We took the train.', speaker: 0}]};
   }};
   const queue = options.queue ?? new InlineQueue();
-  return {service: new TranscriptionService(assets, storage, executor, transcriber, repository, evidence, queue, async () => undefined, 'nova-3'), repository, evidence, queue, calls, usages, releasedRuns, providerCalls: () => providerCalls, runId, setStatus: (next: typeof status) => { status = next; }};
+  return {service: new TranscriptionService(assets, storage, executor, transcriber, repository, evidence, queue, async () => undefined, 'nova-3'), repository, evidence, queue, calls, usages, releasedRuns, providerCalls: () => providerCalls, get runId() { return runId; }, setStatus: (next: typeof status) => { status = next; }, rotateRun: () => { runId = randomUUID(); status = 'reserved'; return runId; }};
 };
 
 describe('TranscriptionService', () => {
@@ -170,6 +170,23 @@ describe('TranscriptionService', () => {
     await expect(ctx.service.processTask(ctx.queue.tasks[0] as never)).resolves.toBe('in_flight');
     expect(ctx.repository.allJobs()[0].status).toBe('processing');
     await expect(ctx.service.addCreatorTranscript({projectId, assetId: source.id, text: 'manual'})).rejects.toThrow('CREATOR_TRANSCRIPT_FALLBACK_NOT_AVAILABLE');
+  });
+
+  it('converges a stale processing job to failed when its provider run already failed without another provider call', async () => {
+    const source = asset(); const ctx = setup(source); const job = await ctx.service.request(projectId, source.id);
+    await ctx.repository.claimJob(job.id, projectId, source.id, ctx.runId, 1, true); ctx.repository.expireJobForTest(job.id); ctx.setStatus('failed');
+    await expect(ctx.service.processTask(ctx.queue.tasks[0] as never)).rejects.toThrow('TRANSCRIPTION_FAILED');
+    expect(ctx.providerCalls()).toBe(0); expect(ctx.repository.allJobs()[0].status).toBe('failed');
+  });
+
+  it('retires untouched old-consent work without enabling fallback and lets renewed consent create fresh work', async () => {
+    const source = asset(); const ctx = setup(source, {executionError: 'consent_changed'}); const old = await ctx.service.request(projectId, source.id);
+    await expect(ctx.service.processTask(ctx.queue.tasks[0] as never)).resolves.toBe('retired_consent');
+    expect(ctx.repository.allJobs()[0]).toMatchObject({id: old.id, providerRunId: old.providerRunId, status: 'retired_consent'});
+    await expect(ctx.service.addCreatorTranscript({projectId, assetId: source.id, text: 'manual'})).rejects.toThrow('CREATOR_TRANSCRIPT_FALLBACK_NOT_AVAILABLE');
+    await expect(ctx.service.processTask(ctx.queue.tasks[0] as never)).resolves.toBe('retired');
+    const freshRunId = ctx.rotateRun(); const fresh = await ctx.service.request(projectId, source.id);
+    expect(fresh).toMatchObject({providerRunId: freshRunId, status: 'pending'}); expect(fresh.id).not.toBe(old.id);
   });
 
   it('recovers a stale pre-dispatch job only while its exact provider run is safe', async () => {

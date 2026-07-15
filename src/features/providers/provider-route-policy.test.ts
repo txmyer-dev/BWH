@@ -13,5 +13,7 @@ describe('provider route privacy policy', () => {
     expect(providerRetryError('PROJECT_FORBIDDEN')).toEqual({code: 'PROJECT_FORBIDDEN', status: 403});
     expect(providerRetryError('PROVIDER_RUN_NOT_FOUND')).toEqual({code: 'PROVIDER_RUN_NOT_FOUND', status: 404});
     expect(providerRetryError('PROVIDER_RUN_NOT_AMBIGUOUS')).toEqual({code: 'PROVIDER_RUN_NOT_AMBIGUOUS', status: 409});
+    expect(providerRetryError('TRANSCRIPTION_RETRY_SOURCE_INVALID')).toEqual({code: 'TRANSCRIPTION_RETRY_SOURCE_INVALID', status: 409});
+    expect(providerRetryError('PROVIDER_RETRY_ENQUEUE_FAILED')).toEqual({code: 'PROVIDER_RETRY_ENQUEUE_FAILED', status: 503});
   });
 });

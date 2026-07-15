@@ -40,6 +40,19 @@ describe('storyboard revision migration history', () => {
     expect(migration).toContain('ALTER TABLE "processing_jobs" ADD COLUMN "provider_run_id" uuid');
   });
 
+  it('keeps fresh and upgraded processing-job index predicates in parity', () => {
+    const initial = readFileSync(join(directory, '0000_hard_shadowcat.sql'), 'utf8');
+    const task9 = readFileSync(join(directory, '0007_asset_transcripts.sql'), 'utf8');
+    const before = JSON.parse(readFileSync(join(directory, 'meta', '0006_snapshot.json'), 'utf8')) as {tables: Record<string, {indexes: Record<string, {where: string}>}>};
+    const after = JSON.parse(readFileSync(join(directory, 'meta', '0007_snapshot.json'), 'utf8')) as typeof before;
+    const historical = before.tables['public.processing_jobs'].indexes.processing_jobs_active_analysis_unique.where;
+    expect(initial).toContain('CREATE UNIQUE INDEX "processing_jobs_active_analysis_unique" ON "processing_jobs" USING btree ("project_id","job_type") WHERE "processing_jobs"."status" IN (\'pending\', \'processing\');');
+    expect(historical).toBe('"processing_jobs"."status" IN (\'pending\', \'processing\')');
+    expect(after.tables['public.processing_jobs'].indexes.processing_jobs_active_analysis_unique.where).toBe(historical);
+    expect(task9).not.toContain('processing_jobs_active_analysis_unique');
+    expect(task9).toContain('CREATE UNIQUE INDEX "processing_jobs_active_transcription_asset_unique"');
+  });
+
   it('ships a fresh ordered sequence with a valid journal and snapshot chain', () => {
     const journal = JSON.parse(readFileSync(join(directory, 'meta', '_journal.json'), 'utf8')) as {entries: {idx: number; tag: string}[]};
     const initial = JSON.parse(readFileSync(join(directory, 'meta', '0000_snapshot.json'), 'utf8')) as {id: string; prevId: string; tables: Record<string, {columns: Record<string, unknown>}>};

@@ -4,6 +4,7 @@ import type {Database} from '../../server/db/client';
 import {fingerprintInput} from './input-fingerprint';
 import {InMemoryProviderRunRepository, PostgresProviderRunRepository} from './provider-run-repository';
 import {providerRunSummary, ProviderRunService} from './provider-run-service';
+import {InMemoryTranscriptionRepository} from '../transcription/transcription-repository';
 
 const projectId = crypto.randomUUID();
 const consentId = crypto.randomUUID();
@@ -65,6 +66,19 @@ describe('provider run state and budget control', () => {
     const replacement = await runs.reserve({...input, consentId: crypto.randomUUID()});
     expect(replacement.runId).not.toBe(old.runId);
     expect((await runs.get(old.runId))?.activeResult).toBe(false);
+  });
+
+  it('atomically retires linked untouched transcription work when renewed consent reserves a replacement', async () => {
+    const jobs = new InMemoryTranscriptionRepository();
+    const repository = new InMemoryProviderRunRepository(() => new Date(), () => false, (runId) => jobs.retireLinkedConsentWorkForTest(runId));
+    const runs = new ProviderRunService(repository, {fingerprintSecret: 'secret', defaultBudgetMicros: 9_000});
+    const old = await runs.reserve(input); const oldJob = await jobs.createJob(projectId, input.canonicalInput.assetId, old.runId);
+    const replacement = await runs.reserve({...input, consentId: crypto.randomUUID(), consentSnapshotHash: 'renewed'});
+    expect(replacement.runId).not.toBe(old.runId); expect((await runs.get(old.runId))?.lastError).toBe('PROVIDER_PREPARED_CONSENT_CHANGED');
+    expect(jobs.allJobs().find((job) => job.id === oldJob.id)?.status).toBe('retired_consent');
+    const fresh = await jobs.createJob(projectId, input.canonicalInput.assetId, replacement.runId);
+    expect(fresh.status).toBe('pending'); expect(await jobs.hasTerminalFailure(projectId, input.canonicalInput.assetId)).toBe(false);
+    await expect(jobs.claimJob(oldJob.id, projectId, input.canonicalInput.assetId, old.runId, 1000, true)).resolves.toEqual({outcome: 'retired'});
   });
 
   it('projects only compact owner-safe run fields', async () => {

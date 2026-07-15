@@ -33,6 +33,14 @@ describe('ProviderExecutor', () => {
     const prepared = await harness.executor.prepare(metadata);
     await expect(harness.executor.executePrepared({...metadata, model: 'nova-future', preparedRunId: prepared.runId, dispatch: vi.fn(), loadResult: vi.fn(), persistResult: vi.fn()})).rejects.toThrow('PROVIDER_PREPARATION_MISMATCH');
   });
+  it('distinguishes a renewed consent snapshot from missing processing consent', async () => {
+    const harness = await makeHarness(); const dispatch = vi.fn();
+    const metadata = {projectId: harness.projectId, provider: 'deepgram', model: 'nova-3', operation: 'transcribe' as const, dataCategories: ['source_audio'], canonicalInput: {assetId: crypto.randomUUID()}, estimatedCostMicros: 100, pricingVersion: 'v1'};
+    const prepared = await harness.executor.prepare(metadata);
+    await harness.consent.accept({projectId: harness.projectId, purpose: 'processing', documentVersion: 'v2', providers: ['deepgram'], dataCategories: ['source_audio'], permissionConfirmed: true});
+    await expect(harness.executor.executePrepared({...metadata, preparedRunId: prepared.runId, dispatch, loadResult: vi.fn(), persistResult: vi.fn()})).rejects.toThrow('PROVIDER_PREPARED_CONSENT_CHANGED');
+    expect(dispatch).not.toHaveBeenCalled();
+  });
   it('rechecks consent before beginDispatch and never calls the provider when invalidated', async () => {
     const harness = await makeHarness();
     const dispatch = vi.fn();
@@ -124,7 +132,7 @@ describe('ProviderExecutor', () => {
       await harness.consent.accept({projectId: harness.projectId, purpose: 'processing', documentVersion: 'v2', providers: ['deepgram'], dataCategories: ['source_audio'], permissionConfirmed: true});
       await begin(claim, validateConsent);
     });
-    await expect(harness.executor.execute({projectId: harness.projectId, provider: 'deepgram', model: 'nova-3', operation: 'transcribe', dataCategories: ['source_audio'], canonicalInput: {audio: 'replaced'}, estimatedCostMicros: 100, pricingVersion: 'v1', dispatch, loadResult: vi.fn(), persistResult: vi.fn()})).rejects.toThrow('PROCESSING_CONSENT_REQUIRED');
+    await expect(harness.executor.execute({projectId: harness.projectId, provider: 'deepgram', model: 'nova-3', operation: 'transcribe', dataCategories: ['source_audio'], canonicalInput: {audio: 'replaced'}, estimatedCostMicros: 100, pricingVersion: 'v1', dispatch, loadResult: vi.fn(), persistResult: vi.fn()})).rejects.toThrow('PROVIDER_PREPARED_CONSENT_CHANGED');
     expect(dispatch).not.toHaveBeenCalled();
   });
 
