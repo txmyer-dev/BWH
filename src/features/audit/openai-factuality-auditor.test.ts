@@ -126,6 +126,20 @@ describe('OpenAIFactualityAuditor', () => {
     await expect(new OpenAIFactualityAuditor(client(output), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(input)).resolves.toMatchObject({status: 'blocked', findings: [expect.objectContaining({kind: 'unsupported', blocking: true})]});
   });
 
+  it('rejects optimistic supported output when a scene has mixed known and unknown saved citations', async () => {
+    const mixed = {...input, narration: [{...input.narration[0], evidenceItemIds: [evidenceId, crypto.randomUUID(), crypto.randomUUID()]}]};
+    await expect(new OpenAIFactualityAuditor(client(parsed), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(mixed)).rejects.toThrow('OPENAI_AUDIT_UNKNOWN_CITATION_UNADDRESSED');
+  });
+
+  it('accepts a blocking missing-citation finding for duplicate unknown saved citations without allowing unknown output IDs', async () => {
+    const unknown = crypto.randomUUID();
+    const mixed = {...input, narration: [{...input.narration[0], evidenceItemIds: [evidenceId, unknown, unknown]}]};
+    const addressed = {findings: [parsed.findings[0], {sceneId, claim: input.narration[0].text, kind: 'missing_citation' as const, blocking: true, evidenceItemIds: []}]};
+    await expect(new OpenAIFactualityAuditor(client(addressed), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(mixed)).resolves.toMatchObject({status: 'blocked'});
+    const leaksUnknown = {findings: [{sceneId, claim: input.narration[0].text, kind: 'missing_citation' as const, blocking: true, evidenceItemIds: [unknown]}]};
+    await expect(new OpenAIFactualityAuditor(client(leaksUnknown), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(mixed)).rejects.toThrow('OPENAI_AUDIT_INVALID_PROVENANCE');
+  });
+
   it('loads and revalidates a completed audit after process restart without a second OpenAI request', async () => {
     const store = new InMemoryProviderStructuredResultStore(); const repository = new InMemoryAuditRepository(); const runId = crypto.randomUUID(); let completed = false;
     const gate: ProviderExecutor = {execute: vi.fn(async (request) => {

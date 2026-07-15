@@ -18,7 +18,7 @@ import {processingConsentDataCategories} from '@/features/consent/processing-dis
 import {durationSecondsToMs} from '@/features/media/audio-duration';
 import type {Question, Storyboard} from '@/features/story/story-service';
 import type {FactualityAuditResult} from '@/features/audit/schemas';
-import {canUseAuditAction, shouldAcceptAuditResponse} from '@/features/audit/audit-ui-state';
+import {canStartApproval, canUseAuditAction, shouldAcceptApprovalResponse, shouldAcceptAuditResponse} from '@/features/audit/audit-ui-state';
 import {
   displayEvidenceClaim,
   buildStoryboardOptions,
@@ -91,7 +91,10 @@ export default function ProjectPage({
   const [providerRuns, setProviderRuns] = useState<ProviderRunSummary[]>([]);
   const [audit, setAudit] = useState<FactualityAuditResult | null>(null);
   const [auditActionsAvailable, setAuditActionsAvailable] = useState(true);
+  const [approvalPending, setApprovalPending] = useState(false);
   const auditEditGeneration = useRef(0);
+  const displayedAuditId = useRef<string|null>(null);
+  const approvalPendingRef = useRef(false);
   const storyboardRef = useRef<Storyboard | null>(null);
   const [corrections, setCorrections] = useState<Record<string, string>>({});
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -114,6 +117,8 @@ export default function ProjectPage({
       if (response.ok) setProviderRuns(await response.json());
     }).catch(() => undefined);
   }, [projectId]);
+
+  const clearDisplayedAudit = () => { displayedAuditId.current = null; setAudit(null); };
 
   const chooseImages = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []).slice(0, 7);
@@ -318,7 +323,7 @@ export default function ProjectPage({
     if (!response.ok) return setMessage('That record change could not be saved.');
     const saved = await response.json() as EvidenceItem;
     auditEditGeneration.current += 1;
-    setAudit(null);
+    clearDisplayedAudit();
     setEvidence((current) => current.map((entry) => entry.id === saved.id ? saved : entry));
     setMessage('Record saved.');
   };
@@ -348,7 +353,7 @@ export default function ProjectPage({
       method: 'PATCH', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({questionId, answer: answers[questionId]})
     });
-    if (response.ok) { auditEditGeneration.current += 1; setAudit(null); }
+    if (response.ok) { auditEditGeneration.current += 1; clearDisplayedAudit(); }
     setMessage(response.ok ? 'Memory saved to the record. Review the narration again when it is ready.' : 'That memory could not be saved.');
   };
 
@@ -360,15 +365,23 @@ export default function ProjectPage({
     if (!response.ok) return setMessage('The narration could not be reviewed. Check your processing choice and try again.');
     const result = await response.json() as FactualityAuditResult;
     if (!shouldAcceptAuditResponse({startedGeneration, currentGeneration: auditEditGeneration.current, dirtySceneCount: dirtySceneIds.current.size, orderDirty: orderDirty.current})) return setMessage('The story changed during review. Save your work, then review the narration again.');
+    displayedAuditId.current = result.auditId;
     setAudit(result);
     setMessage(result.status === 'passed' ? 'Ready for narration.' : 'A few sentences need another look.');
   };
 
   const approveNarration = async () => {
     if (!audit) return;
-    if (!canUseAuditAction({dirtySceneCount: dirtySceneIds.current.size, orderDirty: orderDirty.current})) return setMessage('Save every scene and the scene order before approving the narration.');
-    const response = await fetch(`/api/projects/${projectId}/narration-text/approve`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({auditId: audit.auditId, narrationHash: audit.narrationHash, evidenceHash: audit.evidenceHash, storyboardRevision: audit.storyboardRevision})});
-    setMessage(response.ok ? 'Narration approved exactly as shown.' : 'This narration changed or still needs a source. Review it again.');
+    const actionState = {dirtySceneCount: dirtySceneIds.current.size, orderDirty: orderDirty.current, approvalPending: approvalPendingRef.current};
+    if (!canStartApproval(actionState) || displayedAuditId.current !== audit.auditId) return setMessage(approvalPendingRef.current ? 'Narration approval is already in progress.' : 'Save every scene and the scene order, then review the narration again before approving it.');
+    const startedGeneration = auditEditGeneration.current; const startedAuditId = audit.auditId;
+    approvalPendingRef.current = true; setApprovalPending(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/narration-text/approve`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({auditId: audit.auditId, narrationHash: audit.narrationHash, evidenceHash: audit.evidenceHash, storyboardRevision: audit.storyboardRevision})});
+      if (!shouldAcceptApprovalResponse({startedGeneration, currentGeneration: auditEditGeneration.current, dirtySceneCount: dirtySceneIds.current.size, orderDirty: orderDirty.current, startedAuditId, currentAuditId: displayedAuditId.current})) { setMessage('The story changed during approval. Save your work, then review and approve the narration again.'); return; }
+      setMessage(response.ok ? 'Narration approved exactly as shown.' : 'This narration changed or still needs a source. Review it again.');
+    } catch { setMessage('Narration approval could not be completed. Try again.'); }
+    finally { approvalPendingRef.current = false; setApprovalPending(false); }
   };
 
   const saveScene = async (sceneId: string) => {
@@ -384,7 +397,7 @@ export default function ProjectPage({
     if (response.status === 409) return recoverStoryboardConflict();
     if (!response.ok) return setMessage('That scene could not be saved.');
     const incoming = await response.json() as Storyboard;
-    setAudit(null);
+    clearDisplayedAudit();
     if (shouldClearRequestDirty(capturedGeneration, sceneEditGenerations.current.get(sceneId) ?? 0)) dirtySceneIds.current.delete(sceneId);
     setAuditActionsAvailable(canUseAuditAction({dirtySceneCount: dirtySceneIds.current.size, orderDirty: orderDirty.current}));
     setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, {dirtySceneIds: dirtySceneIds.current, preserveLocalOrder: orderDirty.current}) : incoming);
@@ -402,7 +415,7 @@ export default function ProjectPage({
     if (!response.ok) return setMessage('That scene could not be reshaped.');
     const incoming = await response.json() as Storyboard;
     auditEditGeneration.current += 1;
-    setAudit(null);
+    clearDisplayedAudit();
     if (shouldClearRequestDirty(capturedGeneration, sceneEditGenerations.current.get(sceneId) ?? 0)) dirtySceneIds.current.delete(sceneId);
     setAuditActionsAvailable(canUseAuditAction({dirtySceneCount: dirtySceneIds.current.size, orderDirty: orderDirty.current}));
     setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, {dirtySceneIds: dirtySceneIds.current, preserveLocalOrder: orderDirty.current}) : incoming);
@@ -419,7 +432,7 @@ export default function ProjectPage({
     if (response.status === 409) return recoverStoryboardConflict();
     if (!response.ok) return setMessage('The scene order could not be saved.');
     const incoming = await response.json() as Storyboard;
-    setAudit(null);
+    clearDisplayedAudit();
     if (shouldClearRequestDirty(capturedOrderGeneration, orderGeneration.current)) orderDirty.current = false;
     setAuditActionsAvailable(canUseAuditAction({dirtySceneCount: dirtySceneIds.current.size, orderDirty: orderDirty.current}));
     setStoryboard((current) => current ? mergeStoryboardResponse(current, incoming, {dirtySceneIds: dirtySceneIds.current, preserveLocalOrder: orderDirty.current}) : incoming);
@@ -429,7 +442,7 @@ export default function ProjectPage({
   const updateSceneDraft = (sceneId: string, change: Partial<Storyboard['scenes'][number]>) => {
     auditEditGeneration.current += 1;
     setAuditActionsAvailable(false);
-    setAudit(null);
+    clearDisplayedAudit();
     dirtySceneIds.current.add(sceneId);
     sceneEditGenerations.current.set(sceneId, (sceneEditGenerations.current.get(sceneId) ?? 0) + 1);
     setStoryboard((current) => {
@@ -460,7 +473,7 @@ export default function ProjectPage({
     if (currentIndex < 0 || currentIndex + offset < 0 || currentIndex + offset >= storyboard.scenes.length) return;
     auditEditGeneration.current += 1;
     setAuditActionsAvailable(false);
-    setAudit(null);
+    clearDisplayedAudit();
     setStoryboard((current) => {
     if (!current) return current;
     const from = current.scenes.findIndex((scene) => scene.id === sceneId);
@@ -705,7 +718,7 @@ export default function ProjectPage({
                 if (!dragged || dragged === scene.id) return;
                 auditEditGeneration.current += 1;
                 setAuditActionsAvailable(false);
-                setAudit(null);
+                clearDisplayedAudit();
                 orderDirty.current = true;
                 orderGeneration.current += 1;
                 setStoryboard((current) => {
@@ -755,12 +768,12 @@ export default function ProjectPage({
           <section className="record-card" aria-labelledby="narration-review-title">
             <h4 id="narration-review-title">Final story check</h4>
             <p>Only the narration and the family details you approved are sent to OpenAI for this review.</p>
-            <button type="button" disabled={!auditActionsAvailable} onClick={reviewNarration}>Review narration against the record</button>
+            <button type="button" disabled={!auditActionsAvailable || approvalPending} onClick={reviewNarration}>Review narration against the record</button>
             {audit && <>
               {audit.findings.length === 0 ? <p><strong>Ready for narration.</strong></p> : <ul>{audit.findings.map((finding, index) => <li key={`${finding.sceneId}-${index}`}>
                 <strong>{finding.kind === 'missing_citation' ? 'This sentence needs a source.' : finding.kind === 'overstated' ? 'This wording goes beyond the record.' : finding.kind === 'unsupported' ? 'This sentence is not supported by the record.' : 'Supported by the record.'}</strong> {finding.claim}
               </li>)}</ul>}
-              {audit.status === 'passed' ? <button type="button" disabled={!auditActionsAvailable} onClick={approveNarration}>Approve this exact narration</button> : <p>Edit the sentence or its sources, save the scene, then run a fresh review. Blocking findings cannot be skipped.</p>}
+              {audit.status === 'passed' ? <button type="button" disabled={!auditActionsAvailable || approvalPending} onClick={approveNarration}>{approvalPending ? 'Approving narration…' : 'Approve this exact narration'}</button> : <p>Edit the sentence or its sources, save the scene, then run a fresh review. Blocking findings cannot be skipped.</p>}
             </>}
           </section>
         </section>}
