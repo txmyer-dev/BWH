@@ -1,14 +1,17 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {and, asc, eq, inArray, sql} from 'drizzle-orm';
+import {and, asc, eq, inArray} from 'drizzle-orm';
 
 import type {Database} from '../../server/db/client';
 import {assetTranscripts, assets as mediaAssets, evidenceItems, factualityAudits, providerRuns, storyboards} from '../../server/db/schema';
 import type {ProviderDatabaseTransaction, ProviderResultWriter} from '../providers/types';
+import {lockNarrationProject} from '../narration/narration-lock';
 import {effectiveEvidenceClaim} from '../story/story-service';
 import type {EvidenceItem} from '../evidence/schemas';
 import type {AuditFinding, FactualityAuditInput, FactualityAuditResult} from './schemas';
 
 export type AuditSnapshot = Omit<FactualityAuditInput, 'evidenceHash'|'narrationHash'> & {durationSeconds: number};
+export type AuditContract = {auditPromptVersion: string; auditSchemaVersion: string; model: string};
+export type CreatorApprovalAuthority = {auditContract: AuditContract; transcriptionModel: string};
 export interface AuditRepository {
   loadSnapshot(projectId: string): Promise<AuditSnapshot>;
   persistAudit(writer: ProviderResultWriter, input: FactualityAuditInput, providerRunId: string, findings: AuditFinding[], contract: AuditContract): Promise<string>;
@@ -16,9 +19,8 @@ export interface AuditRepository {
   findById(projectId: string, auditId: string): Promise<FactualityAuditResult | undefined>;
   approve(projectId: string, audit: FactualityAuditResult): Promise<{narrationApproved: true; auditId: string}>;
   loadCreatorAudioSnapshot(projectId: string, assetId: string): Promise<AuditSnapshot & {auditScope: 'creator_audio'; assetId: string; transcriptId: string; transcriptProviderRunId: string}>;
-  approveCreatorAudio(projectId: string, assetId: string, audit: FactualityAuditResult): Promise<{creatorAudioApproved: true; auditId: string}>;
+  approveCreatorAudio(projectId: string, assetId: string, audit: FactualityAuditResult, authority: CreatorApprovalAuthority): Promise<{creatorAudioApproved: true; auditId: string}>;
 }
-export type AuditContract = {auditPromptVersion: string; auditSchemaVersion: string; model: string};
 
 export const projectApprovedEvidenceLedger = (items: EvidenceItem[]) => items
   .filter((item) => item.kind !== 'model_hypothesis' && ['confirmed', 'corrected'].includes(item.verificationStatus))
@@ -37,7 +39,7 @@ const mapAudit = (row: typeof factualityAudits.$inferSelect): FactualityAuditRes
 });
 
 export class PostgresAuditRepository implements AuditRepository {
-  constructor(private readonly database: Database) {}
+  constructor(private readonly database: Database, private readonly transcriptionModel = 'nova-3') {}
   async loadSnapshot(projectId: string) {
     const board = await this.database.query.storyboards.findFirst({where: (table, {eq: equals}) => equals(table.projectId, projectId)});
     if (!board) throw new Error('STORYBOARD_NOT_FOUND');
@@ -54,6 +56,7 @@ export class PostgresAuditRepository implements AuditRepository {
   async persistAudit(writer: ProviderResultWriter, input: FactualityAuditInput, providerRunId: string, findings: AuditFinding[], contract: AuditContract) {
     const id = randomUUID(); const status = findings.some((finding) => finding.blocking) ? 'blocked' : 'passed';
     await writer.writeStructured(async (transaction) => {
+      await lockNarrationProject(transaction, input.projectId);
       if (input.auditScope === 'creator_audio' && input.assetId) {
         const current = await this.loadCreatorAudioSnapshotLocked(transaction, input.projectId, input.assetId);
         if (current.transcriptId !== input.transcriptId || current.transcriptProviderRunId !== input.transcriptProviderRunId || current.storyboardRevision !== input.storyboardRevision || sha256Canonical(current.evidence) !== input.evidenceHash || sha256Canonical({text: current.narration[0]?.text ?? ''}) !== input.narrationHash) throw new Error('AUDIT_STALE_DURING_DISPATCH');
@@ -66,28 +69,33 @@ export class PostgresAuditRepository implements AuditRepository {
     return id;
   }
   private async loadCreatorAudioSnapshotLocked(transaction: ProviderDatabaseTransaction, projectId: string, assetId: string) {
-    await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}), hashtext('narration'))`);
+    await lockNarrationProject(transaction, projectId);
     const [board] = await transaction.select().from(storyboards).where(eq(storyboards.projectId, projectId)).for('share'); if (!board) throw new Error('STORYBOARD_NOT_FOUND');
     const [asset] = await transaction.select().from(mediaAssets).where(and(eq(mediaAssets.projectId, projectId), eq(mediaAssets.id, assetId))).for('share');
     const [transcript] = await transaction.select().from(assetTranscripts).where(and(eq(assetTranscripts.projectId, projectId), eq(assetTranscripts.assetId, assetId))).for('share');
-    const [run] = transcript ? await transaction.select().from(providerRuns).where(and(eq(providerRuns.id, transcript.providerRunId), eq(providerRuns.projectId, projectId))).for('share') : [];
-    if (!asset || asset.assetKind !== 'creator_narration' || asset.processingStatus !== 'ready' || !transcript || !run || run.provider !== 'deepgram' || run.model !== 'nova-3' || run.operation !== 'transcribe' || !run.activeResult || run.status !== 'completed') throw new Error('CREATOR_AUDIO_TRANSCRIPT_REQUIRED');
+    const [run] = transcript ? await transaction.select().from(providerRuns).where(and(eq(providerRuns.id, transcript.providerRunId), eq(providerRuns.projectId, projectId))) : [];
+    if (!asset || asset.assetKind !== 'creator_narration' || asset.processingStatus !== 'ready' || !transcript || !run || run.provider !== 'deepgram' || run.model !== this.transcriptionModel || run.operation !== 'transcribe' || !run.activeResult || run.status !== 'completed') throw new Error('CREATOR_AUDIO_TRANSCRIPT_REQUIRED');
     const rows = await transaction.select().from(evidenceItems).where(and(eq(evidenceItems.projectId, projectId), inArray(evidenceItems.verificationStatus, ['confirmed', 'corrected']))).orderBy(asc(evidenceItems.id)).for('share');
     const evidence = projectApprovedEvidenceLedger(rows.map((row) => ({id: row.id, projectId: row.projectId, kind: row.type as EvidenceItem['kind'], claim: row.claim, originalClaim: row.originalClaim, sourceAssetIds: row.sourceAssetIds as string[], sourceExcerpt: row.sourceExcerpt, confidence: row.confidence, verificationStatus: row.verificationStatus as EvidenceItem['verificationStatus'], correction: row.correction}))).filter((item) => !item.sourceAssetIds.includes(assetId));
     return {projectId, storyboardId: board.id, storyboardRevision: board.revision, durationSeconds: 120, evidence, narration: [{sceneId: assetId, text: transcript.text, evidenceItemIds: evidence.map((item) => item.id)}], auditScope: 'creator_audio' as const, assetId, transcriptId: transcript.id, transcriptProviderRunId: transcript.providerRunId};
   }
   async loadCreatorAudioSnapshot(projectId: string, assetId: string) { return this.database.transaction((transaction) => this.loadCreatorAudioSnapshotLocked(transaction, projectId, assetId)); }
-  async approveCreatorAudio(projectId: string, assetId: string, audit: FactualityAuditResult) {
+  async approveCreatorAudio(projectId: string, assetId: string, audit: FactualityAuditResult, authority: CreatorApprovalAuthority) {
     if (audit.auditScope !== 'creator_audio' || audit.assetId !== assetId || !audit.transcriptId || audit.status !== 'passed' || audit.findings.some((finding) => finding.blocking)) throw new Error('CREATOR_AUDIO_AUDIT_REQUIRED');
     return this.database.transaction(async (transaction) => {
-      await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}), hashtext('narration'))`);
+      await lockNarrationProject(transaction, projectId);
       const [board] = await transaction.select().from(storyboards).where(eq(storyboards.projectId, projectId)).for('update');
+      const [asset] = await transaction.select().from(mediaAssets).where(and(eq(mediaAssets.projectId, projectId), eq(mediaAssets.id, assetId))).for('update');
       const [transcript] = await transaction.select().from(assetTranscripts).where(and(eq(assetTranscripts.projectId, projectId), eq(assetTranscripts.assetId, assetId), eq(assetTranscripts.id, audit.transcriptId!))).for('share');
+      const [run] = transcript ? await transaction.select().from(providerRuns).where(and(eq(providerRuns.id, transcript.providerRunId), eq(providerRuns.projectId, projectId))) : [];
+      const [persistedAuditRow] = await transaction.select().from(factualityAudits).where(and(eq(factualityAudits.id, audit.auditId), eq(factualityAudits.projectId, projectId))).for('share');
       const rows = await transaction.select().from(evidenceItems).where(and(eq(evidenceItems.projectId, projectId), inArray(evidenceItems.verificationStatus, ['confirmed','corrected']))).orderBy(asc(evidenceItems.id)).for('share');
       const evidenceHash = sha256Canonical(projectApprovedEvidenceLedger(rows.map((row) => ({id: row.id, projectId: row.projectId, kind: row.type as EvidenceItem['kind'], claim: row.claim, originalClaim: row.originalClaim, sourceAssetIds: row.sourceAssetIds as string[], sourceExcerpt: row.sourceExcerpt, confidence: row.confidence, verificationStatus: row.verificationStatus as EvidenceItem['verificationStatus'], correction: row.correction}))).filter((item) => !item.sourceAssetIds.includes(assetId)));
       const transcriptHash = transcript ? sha256Canonical({text: transcript.text}) : '';
-      if (!board || !transcript || audit.storyboardId !== board.id || audit.storyboardRevision !== board.revision || audit.transcriptProviderRunId !== transcript.providerRunId || audit.evidenceHash !== evidenceHash || audit.narrationHash !== transcriptHash) throw new Error('AUDIT_HASH_MISMATCH');
-      const [row] = await transaction.update(mediaAssets).set({creatorTranscriptAuditId: audit.auditId, creatorTranscriptApprovalHash: audit.narrationHash, updatedAt: new Date()}).where(and(eq(mediaAssets.projectId, projectId), eq(mediaAssets.id, assetId), eq(mediaAssets.assetKind, 'creator_narration'))).returning({id: mediaAssets.id});
+      const persistedAudit = persistedAuditRow ? mapAudit(persistedAuditRow) : undefined;
+      const contract = authority.auditContract;
+      if (!board || !asset || asset.assetKind !== 'creator_narration' || asset.processingStatus !== 'ready' || !transcript || !run || run.provider !== 'deepgram' || authority.transcriptionModel !== this.transcriptionModel || run.model !== this.transcriptionModel || run.operation !== 'transcribe' || run.status !== 'completed' || !run.activeResult || !persistedAudit || persistedAudit.auditScope !== 'creator_audio' || persistedAudit.assetId !== assetId || persistedAudit.transcriptId !== transcript.id || persistedAudit.transcriptProviderRunId !== run.id || persistedAudit.storyboardId !== board.id || persistedAudit.storyboardRevision !== board.revision || persistedAudit.status !== 'passed' || persistedAudit.findings.some((finding) => finding.blocking) || persistedAudit.auditPromptVersion !== contract.auditPromptVersion || persistedAudit.auditSchemaVersion !== contract.auditSchemaVersion || persistedAudit.model !== contract.model || persistedAudit.evidenceHash !== evidenceHash || persistedAudit.narrationHash !== transcriptHash || audit.evidenceHash !== persistedAudit.evidenceHash || audit.narrationHash !== persistedAudit.narrationHash) throw new Error('AUDIT_HASH_MISMATCH');
+      const [row] = await transaction.update(mediaAssets).set({creatorTranscriptAuditId: persistedAudit.auditId, creatorTranscriptApprovalHash: persistedAudit.narrationHash, updatedAt: new Date()}).where(and(eq(mediaAssets.projectId, projectId), eq(mediaAssets.id, assetId), eq(mediaAssets.assetKind, 'creator_narration'), eq(mediaAssets.processingStatus, 'ready'))).returning({id: mediaAssets.id});
       if (!row) throw new Error('CREATOR_AUDIO_TRANSCRIPT_REQUIRED'); return {creatorAudioApproved: true as const, auditId: audit.auditId};
     });
   }
@@ -95,6 +103,7 @@ export class PostgresAuditRepository implements AuditRepository {
   async findById(projectId: string, auditId: string) { const [row] = await this.database.select().from(factualityAudits).where(and(eq(factualityAudits.projectId, projectId), eq(factualityAudits.id, auditId))).limit(1); return row ? mapAudit(row) : undefined; }
   async approve(projectId: string, audit: FactualityAuditResult) {
     return this.database.transaction(async (transaction) => {
+      await lockNarrationProject(transaction, projectId);
       const [board] = await transaction.select().from(storyboards).where(and(eq(storyboards.id, audit.storyboardId), eq(storyboards.projectId, projectId))).for('update');
       if (!board || board.revision !== audit.storyboardRevision || board.currentAuditId !== audit.auditId) throw new Error('AUDIT_STALE');
       const [updated] = await transaction.update(storyboards).set({narrationApprovedAt: new Date(), narrationApprovalAuditId: audit.auditId, narrationApprovalEvidenceHash: audit.evidenceHash, narrationApprovalHash: audit.narrationHash, updatedAt: new Date()}).where(and(eq(storyboards.id, board.id), eq(storyboards.revision, audit.storyboardRevision))).returning({id: storyboards.id});
@@ -116,7 +125,7 @@ export class InMemoryAuditRepository implements AuditRepository {
   async approve(projectId: string, audit: FactualityAuditResult) { if (!this.snapshot || this.snapshot.projectId !== projectId || this.snapshot.storyboardId !== audit.storyboardId || this.snapshot.storyboardRevision !== audit.storyboardRevision) throw new Error('AUDIT_STALE'); this.approval = structuredClone(audit); return {narrationApproved: true as const, auditId: audit.auditId}; }
   seedCreatorAudio(input: {projectId: string; assetId: string; transcriptId: string; transcriptText: string}) { this.creator = {...input}; }
   async loadCreatorAudioSnapshot(projectId: string, assetId: string) { if (!this.snapshot || !this.creator || this.creator.projectId !== projectId || this.creator.assetId !== assetId) throw new Error('CREATOR_AUDIO_TRANSCRIPT_REQUIRED'); return {...structuredClone(this.snapshot), narration: [{sceneId: assetId, text: this.creator.transcriptText, evidenceItemIds: this.snapshot.evidence.map((item) => item.id)}], auditScope: 'creator_audio' as const, assetId, transcriptId: this.creator.transcriptId, transcriptProviderRunId: this.creator.transcriptId}; }
-  async approveCreatorAudio(projectId: string, assetId: string, audit: FactualityAuditResult) { if (!this.creator || this.creator.projectId !== projectId || this.creator.assetId !== assetId || audit.auditScope !== 'creator_audio' || audit.assetId !== assetId || audit.status !== 'passed') throw new Error('CREATOR_AUDIO_AUDIT_REQUIRED'); this.creator.auditId = audit.auditId; this.creator.hash = audit.narrationHash; return {creatorAudioApproved: true as const, auditId: audit.auditId}; }
+  async approveCreatorAudio(projectId: string, assetId: string, audit: FactualityAuditResult, authority: CreatorApprovalAuthority) { if (!this.creator || this.creator.projectId !== projectId || this.creator.assetId !== assetId || audit.auditScope !== 'creator_audio' || audit.assetId !== assetId || audit.status !== 'passed' || audit.auditPromptVersion !== authority.auditContract.auditPromptVersion || audit.auditSchemaVersion !== authority.auditContract.auditSchemaVersion || audit.model !== authority.auditContract.model) throw new Error('CREATOR_AUDIO_AUDIT_REQUIRED'); this.creator.auditId = audit.auditId; this.creator.hash = audit.narrationHash; return {creatorAudioApproved: true as const, auditId: audit.auditId}; }
   setSnapshot(snapshot: AuditSnapshot) { this.snapshot = structuredClone(snapshot); this.approval = undefined; }
 }
 

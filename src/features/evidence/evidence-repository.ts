@@ -5,6 +5,7 @@ import type {Database} from '../../server/db/client';
 import {evidenceItems, processingJobs, transcriptEvidenceSegments} from '../../server/db/schema';
 import type {EvidenceCandidate} from '../story/schemas';
 import {invalidateDownstreamStoryState} from '../story/story-service';
+import {lockNarrationProject} from '../narration/narration-lock';
 import type {EvidenceItem, VerificationStatus} from './schemas';
 
 export interface AnalysisJob {
@@ -43,7 +44,7 @@ export interface EvidenceRepository {
   failAnalysis(jobId: string, leaseToken: string, message: string): Promise<void>;
   createProposed(projectId: string, candidates: EvidenceCandidate[]): Promise<EvidenceItem[]>;
   findById(id: string): Promise<EvidenceItem | undefined>;
-  review(id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string): Promise<EvidenceItem>;
+  review(projectId: string, id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string): Promise<EvidenceItem>;
   listByProject(projectId: string): Promise<EvidenceItem[]>;
   findTranscriptSegment(projectId: string, evidenceItemId: string): Promise<{assetId: string; startMs: number; endMs: number}|undefined>;
   linkTranscriptSegment?(projectId: string, evidenceItemId: string, segment: {transcriptId: string; assetId: string; startMs: number; endMs: number}): Promise<void>;
@@ -134,9 +135,10 @@ export class PostgresEvidenceRepository implements EvidenceRepository {
     return row ? mapEvidence(row) : undefined;
   }
 
-  async review(id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string) {
+  async review(projectId: string, id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string) {
     return this.database.transaction(async (transaction) => {
-      const [row] = await transaction.update(evidenceItems).set({verificationStatus: status, correction: correction ?? null, updatedAt: new Date()}).where(and(eq(evidenceItems.id, id), eq(evidenceItems.verificationStatus, 'proposed'))).returning();
+      await lockNarrationProject(transaction, projectId);
+      const [row] = await transaction.update(evidenceItems).set({verificationStatus: status, correction: correction ?? null, updatedAt: new Date()}).where(and(eq(evidenceItems.id, id), eq(evidenceItems.projectId, projectId), eq(evidenceItems.verificationStatus, 'proposed'))).returning();
       if (!row) throw new Error('EVIDENCE_ALREADY_REVIEWED');
       await invalidateDownstreamStoryState(transaction, row.projectId);
       return mapEvidence(row);
@@ -189,9 +191,9 @@ export class InMemoryEvidenceRepository implements EvidenceRepository {
     });
   }
   async findById(id: string) { const item = this.evidence.get(id); return item ? {...item, sourceAssetIds: [...item.sourceAssetIds]} : undefined; }
-  async review(id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string) {
+  async review(projectId: string, id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string) {
     const item = this.evidence.get(id);
-    if (!item) throw new Error('EVIDENCE_NOT_FOUND');
+    if (!item || item.projectId !== projectId) throw new Error('EVIDENCE_NOT_FOUND');
     if (item.verificationStatus !== 'proposed') throw new Error('EVIDENCE_ALREADY_REVIEWED');
     const reviewed = {...item, verificationStatus: status, correction: correction ?? null};
     this.evidence.set(id, reviewed); return {...reviewed, sourceAssetIds: [...reviewed.sourceAssetIds]};

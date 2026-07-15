@@ -4,7 +4,7 @@ import {sha256Canonical} from './audit-repository';
 import type {AuditContract} from './audit-repository';
 
 export class AuditService {
-  constructor(private readonly repository: AuditRepository, private readonly auditor: FactualityAuditor, private readonly assertCreator: (projectId: string) => Promise<void>, private readonly expectedContract?: AuditContract) {}
+  constructor(private readonly repository: AuditRepository, private readonly auditor: FactualityAuditor, private readonly assertCreator: (projectId: string) => Promise<void>, private readonly expectedContract?: AuditContract, private readonly expectedTranscriptionModel = 'nova-3') {}
   async requestAudit(projectId: string) {
     await this.assertCreator(projectId);
     const snapshot = await this.repository.loadSnapshot(projectId);
@@ -36,6 +36,7 @@ export class AuditService {
     const currentNarrationHash = sha256Canonical({text: current.narration[0]?.text ?? ''}); const currentEvidenceHash = sha256Canonical(current.evidence);
     if (this.expectedContract && (audit.auditPromptVersion !== this.expectedContract.auditPromptVersion || audit.auditSchemaVersion !== this.expectedContract.auditSchemaVersion || audit.model !== this.expectedContract.model)) throw new Error('AUDIT_CONTRACT_STALE');
     if (audit.narrationHash !== narrationHash || audit.evidenceHash !== evidenceHash || audit.narrationHash !== currentNarrationHash || audit.evidenceHash !== currentEvidenceHash || audit.transcriptId !== current.transcriptId || audit.transcriptProviderRunId !== current.transcriptProviderRunId || audit.storyboardRevision !== current.storyboardRevision) throw new Error('AUDIT_HASH_MISMATCH');
-    return this.repository.approveCreatorAudio(projectId, assetId, audit);
+    if (!this.expectedContract) throw new Error('AUDIT_CONTRACT_STALE');
+    return this.repository.approveCreatorAudio(projectId, assetId, audit, {auditContract: this.expectedContract, transcriptionModel: this.expectedTranscriptionModel});
   }
 }

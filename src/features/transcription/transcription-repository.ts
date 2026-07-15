@@ -1,12 +1,13 @@
 import {randomUUID} from 'node:crypto';
-import {and, eq, lte, ne, or, sql} from 'drizzle-orm';
+import {and, eq, lte, or, sql} from 'drizzle-orm';
 
 import type {Database} from '../../server/db/client';
-import {assetTranscripts, assets as mediaAssets, evidenceItems, processingJobs, projectProviderBudgets, providerRuns, transcriptEvidenceSegments} from '../../server/db/schema';
+import {assetTranscripts, assets as mediaAssets, evidenceItems, processingJobs, projectProviderBudgets, providerArtifacts, providerRuns, transcriptEvidenceSegments} from '../../server/db/schema';
 import type {ProviderResultWriter} from '../providers/types';
 import {transcriptSchema, type Transcript} from './transcriber';
 import type {EvidenceRepository} from '../evidence/evidence-repository';
 import {invalidateDownstreamStoryState} from '../story/story-service';
+import {lockNarrationProject} from '../narration/narration-lock';
 
 export type AssetTranscript = Transcript & {
   id: string; projectId: string; assetId: string; providerRunId: string; createdAt: Date;
@@ -45,9 +46,12 @@ export class PostgresTranscriptionRepository implements TranscriptionRepository 
     const valid = transcriptSchema.parse(input.transcript);
     let persisted: AssetTranscript | undefined;
     await input.writer.writeStructured(async (transaction) => {
+      await lockNarrationProject(transaction, input.projectId);
       const id = randomUUID();
       const [previous] = await transaction.select({providerRunId: assetTranscripts.providerRunId}).from(assetTranscripts).where(and(eq(assetTranscripts.projectId, input.projectId), eq(assetTranscripts.assetId, input.assetId)));
-      if (previous && previous.providerRunId !== input.providerRunId) await transaction.update(providerRuns).set({activeResult: false, updatedAt: new Date()}).where(and(eq(providerRuns.id, previous.providerRunId), ne(providerRuns.id, input.providerRunId)));
+      if (previous && previous.providerRunId !== input.providerRunId) {
+        await transaction.insert(providerArtifacts).values({id: randomUUID(), projectId: input.projectId, providerRunId: previous.providerRunId, provider: 'provider_run_cache', providerArtifactId: `provider-run:${previous.providerRunId}`, status: 'cleanup_pending', expiresAt: new Date()}).onConflictDoNothing();
+      }
       const [row] = await transaction.insert(assetTranscripts).values({
         id, projectId: input.projectId, assetId: input.assetId, providerRunId: input.providerRunId,
         text: valid.text, language: valid.language, confidence: valid.confidence,
@@ -61,7 +65,7 @@ export class PostgresTranscriptionRepository implements TranscriptionRepository 
       await transaction.update(mediaAssets).set({metadata: sql`${mediaAssets.metadata} || ${JSON.stringify({durationMs: valid.durationMs})}::jsonb`, creatorTranscriptAuditId: null, creatorTranscriptApprovalHash: null, updatedAt: new Date()}).where(and(eq(mediaAssets.id, input.assetId), eq(mediaAssets.projectId, input.projectId)));
       await transaction.delete(evidenceItems).where(and(
         eq(evidenceItems.projectId, input.projectId), eq(evidenceItems.assetId, input.assetId),
-        eq(evidenceItems.type, 'transcript'), eq(evidenceItems.verificationStatus, 'proposed')
+        eq(evidenceItems.type, 'transcript')
       ));
       const evidenceRows = valid.segments.map((segment) => ({
         id: randomUUID(), projectId: input.projectId, assetId: input.assetId, type: 'transcript',
@@ -72,7 +76,7 @@ export class PostgresTranscriptionRepository implements TranscriptionRepository 
         await transaction.insert(evidenceItems).values(evidenceRows);
         await transaction.insert(transcriptEvidenceSegments).values(evidenceRows.map((evidence, index) => ({evidenceItemId: evidence.id, transcriptId: row.id, projectId: input.projectId, assetId: input.assetId, startMs: valid.segments[index].startMs, endMs: valid.segments[index].endMs})));
       }
-      if (asset?.kind === 'creator_narration') await invalidateDownstreamStoryState(transaction, input.projectId);
+      if (previous || asset?.kind === 'creator_narration') await invalidateDownstreamStoryState(transaction, input.projectId);
       persisted = map(row);
     });
     if (!persisted) throw new Error('TRANSCRIPT_PERSIST_FAILED');

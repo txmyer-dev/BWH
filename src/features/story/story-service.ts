@@ -3,7 +3,8 @@ import {and, asc, eq, inArray, sql} from 'drizzle-orm';
 import {z} from 'zod';
 
 import type {Database} from '../../server/db/client';
-import {assets, evidenceItems, filmScenes, interviewAnswers, interviewQuestions, narrationSamples, narrationTracks, projects, providerArtifacts, providerRuns, storyboards, voiceProfiles} from '../../server/db/schema';
+import {assets, evidenceItems, filmScenes, interviewAnswers, interviewQuestions, narrationSamples, narrationTracks, projects, providerArtifacts, storyboards, voiceProfiles} from '../../server/db/schema';
+import {lockNarrationProject} from '../narration/narration-lock';
 import type {ProviderDatabaseTransaction} from '../providers/types';
 import type {EvidenceItem} from '../evidence/schemas';
 import type {AssetRepository} from '../media/asset-service';
@@ -42,11 +43,9 @@ export type Storyboard = {
 const retirePrivateNarration = async (transaction: ProviderDatabaseTransaction, projectId: string, rows: {providerRunId: string; objectKey: string}[]) => {
   if (!rows.length) return;
   await transaction.insert(providerArtifacts).values(rows.map((row) => ({id: randomUUID(), projectId, providerRunId: row.providerRunId, provider: 'google_cloud_storage', providerArtifactId: row.objectKey, status: 'cleanup_pending', expiresAt: new Date()}))).onConflictDoNothing();
-  await transaction.update(providerRuns).set({activeResult: false, updatedAt: new Date()}).where(inArray(providerRuns.id, rows.map((row) => row.providerRunId)));
 };
 
 export const invalidateDownstreamStoryState = async (transaction: ProviderDatabaseTransaction, projectId: string, storyboardId?: string, bumpRevision = true, affectedSceneIds?: string[]) => {
-  await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}), hashtext('narration'))`);
   const boards = storyboardId
     ? await transaction.select({id: storyboards.id}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)))
     : await transaction.select({id: storyboards.id}).from(storyboards).where(eq(storyboards.projectId, projectId));
@@ -431,6 +430,7 @@ export class PostgresStoryRepository implements StoryRepository {
   }
   async saveAnswer(projectId: string, questionId: string, answer: string) {
     await this.database.transaction(async (transaction) => {
+      await lockNarrationProject(transaction, projectId);
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${questionId}))`);
       const [question] = await transaction.select().from(interviewQuestions).where(and(eq(interviewQuestions.id, questionId), eq(interviewQuestions.projectId, projectId)));
       if (!question) throw new Error('QUESTION_NOT_FOUND');
@@ -473,6 +473,7 @@ export class PostgresStoryRepository implements StoryRepository {
   async addScene(projectId: string, storyboardId: string, scene: FilmSceneInput, expectedRevision: number) {
     await this.requireBoard(projectId, storyboardId);
     const [row] = await this.database.transaction(async (transaction) => {
+      await lockNarrationProject(transaction, projectId);
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
       const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
       if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
@@ -489,6 +490,7 @@ export class PostgresStoryRepository implements StoryRepository {
   async editScene(projectId: string, storyboardId: string, sceneId: string, change: Partial<FilmSceneInput>, expectedRevision: number) {
     await this.requireBoard(projectId, storyboardId);
     await this.database.transaction(async (transaction) => {
+      await lockNarrationProject(transaction, projectId);
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
       const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
       if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
@@ -507,6 +509,7 @@ export class PostgresStoryRepository implements StoryRepository {
   async reorderScenes(projectId: string, storyboardId: string, orderedSceneIds: string[], expectedRevision: number) {
     await this.requireBoard(projectId, storyboardId);
     await this.database.transaction(async (transaction) => {
+      await lockNarrationProject(transaction, projectId);
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
       const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
       if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
@@ -522,6 +525,7 @@ export class PostgresStoryRepository implements StoryRepository {
   async replaceScene(projectId: string, storyboardId: string, sceneId: string, scene: FilmSceneInput, expectedRevision: number) {
     await this.requireBoard(projectId, storyboardId);
     await this.database.transaction(async (transaction) => {
+      await lockNarrationProject(transaction, projectId);
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
       const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
       if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');

@@ -26,6 +26,7 @@ import {
   AUDIT_SCHEMA_VERSION,
 } from "../audit/openai-factuality-auditor";
 import type { EvidenceItem } from "../evidence/schemas";
+import { lockNarrationProject } from "./narration-lock";
 import type {
   ProviderDatabaseTransaction,
   ProviderResultWriter,
@@ -170,14 +171,13 @@ export class PostgresNarrationRepository implements NarrationRepository {
       auditSchemaVersion: AUDIT_SCHEMA_VERSION,
       model: "gpt-5.6",
     },
+    private readonly expectedTranscriptionModel = "nova-3",
   ) {}
   private async loadApprovedStoryboardLocked(
     transaction: ProviderDatabaseTransaction,
     projectId: string,
   ) {
-    await transaction.execute(
-      sql`select pg_advisory_xact_lock(hashtext(${projectId}), hashtext('narration'))`,
-    );
+    await lockNarrationProject(transaction, projectId);
     const [board] = await transaction
       .select()
       .from(storyboards)
@@ -337,8 +337,7 @@ export class PostgresNarrationRepository implements NarrationRepository {
           eq(providerRuns.id, providerRunId),
           eq(providerRuns.projectId, projectId),
         ),
-      )
-      .for("share");
+      );
     const [consent] = await transaction
       .select()
       .from(projectConsents)
@@ -557,9 +556,7 @@ export class PostgresNarrationRepository implements NarrationRepository {
     projectId: string,
     assetId: string,
   ) {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtext(${projectId}), hashtext('narration'))`,
-    );
+    await lockNarrationProject(tx, projectId);
     const [row] = await tx
       .select({
         assetId: assets.id,
@@ -570,20 +567,22 @@ export class PostgresNarrationRepository implements NarrationRepository {
         providerRunId: assetTranscripts.providerRunId,
         transcriptAuditId: assets.creatorTranscriptAuditId,
         approvedHash: assets.creatorTranscriptApprovalHash,
-        provider: providerRuns.provider,
-        model: providerRuns.model,
-        operation: providerRuns.operation,
-        runActive: providerRuns.activeResult,
-        runStatus: providerRuns.status,
       })
       .from(assets)
       .innerJoin(assetTranscripts, eq(assetTranscripts.assetId, assets.id))
-      .innerJoin(
-        providerRuns,
-        eq(providerRuns.id, assetTranscripts.providerRunId),
-      )
       .where(and(eq(assets.projectId, projectId), eq(assets.id, assetId)))
       .for("update");
+    const [run] = row
+      ? await tx
+          .select()
+          .from(providerRuns)
+          .where(
+            and(
+              eq(providerRuns.id, row.providerRunId),
+              eq(providerRuns.projectId, projectId),
+            ),
+          )
+      : [];
     const [board] = await tx
       .select()
       .from(storyboards)
@@ -636,11 +635,12 @@ export class PostgresNarrationRepository implements NarrationRepository {
       !board ||
       row.kind !== "creator_narration" ||
       row.status !== "ready" ||
-      row.provider !== "deepgram" ||
-      row.model !== "nova-3" ||
-      row.operation !== "transcribe" ||
-      !row.runActive ||
-      row.runStatus !== "completed" ||
+      !run ||
+      run.provider !== "deepgram" ||
+      run.model !== this.expectedTranscriptionModel ||
+      run.operation !== "transcribe" ||
+      !run.activeResult ||
+      run.status !== "completed" ||
       row.approvedHash !== transcriptHash ||
       !audit ||
       audit.auditScope !== "creator_audio" ||

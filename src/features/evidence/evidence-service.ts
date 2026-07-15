@@ -104,16 +104,16 @@ export class EvidenceService {
     if (correction !== undefined) {
       const text = correction.trim();
       if (!text) throw new Error('CORRECTION_REQUIRED');
-      return this.repository.review(id, 'corrected', text);
+      return this.repository.review(item.projectId, id, 'corrected', text);
     }
-    return this.repository.review(id, 'confirmed');
+    return this.repository.review(item.projectId, id, 'confirmed');
   }
 
   async rejectEvidence(id: string) {
     const item = await this.repository.findById(id);
     if (!item) throw new Error('EVIDENCE_NOT_FOUND');
     await this.assertCreator(item.projectId);
-    return this.repository.review(id, 'rejected');
+    return this.repository.review(item.projectId, id, 'rejected');
   }
 
   async listVerifiedFacts(projectId: string) {

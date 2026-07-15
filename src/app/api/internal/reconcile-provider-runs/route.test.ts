@@ -6,14 +6,37 @@ describe('provider reconciliation route', () => {
   it('deletes retired private media from GCS without calling a provider API', async () => {
     const gcs = {deleteMany: vi.fn().mockResolvedValue(undefined)};
     const fetchImpl = vi.fn();
+    const deactivateProviderRun = vi.fn().mockResolvedValue(undefined);
+    const projectId = crypto.randomUUID(); const runId = crypto.randomUUID(); const sceneId = crypto.randomUUID();
 
-    await removeProviderArtifact(
-      {provider: 'google_cloud_storage', providerArtifactId: 'projects/p/scenes/s.wav'},
-      {gcs, fetchImpl}
+    for (const providerArtifactId of [
+      `projects/${projectId}/narration/${runId}/sample.wav`,
+      `projects/${projectId}/narration/${runId}/scenes/${sceneId}.wav`
+    ]) await removeProviderArtifact(
+      {projectId, providerRunId: runId, provider: 'google_cloud_storage', providerArtifactId},
+      {gcs, fetchImpl, deactivateProviderRun}
     );
 
-    expect(gcs.deleteMany).toHaveBeenCalledWith(['projects/p/scenes/s.wav']);
+    expect(deactivateProviderRun).toHaveBeenCalledTimes(2);
+    expect(deactivateProviderRun.mock.invocationCallOrder[0]).toBeLessThan(gcs.deleteMany.mock.invocationCallOrder[0]);
+    expect(gcs.deleteMany).toHaveBeenCalledWith([`projects/${projectId}/narration/${runId}/sample.wav`]);
+    expect(gcs.deleteMany).toHaveBeenCalledWith([`projects/${projectId}/narration/${runId}/scenes/${sceneId}.wav`]);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['cross-project', (projectId: string, runId: string) => `projects/${crypto.randomUUID()}/narration/${runId}/sample.wav`],
+    ['other-prefix', (projectId: string, runId: string) => `projects/${projectId}/uploads/${runId}/sample.wav`],
+    ['traversal', (projectId: string, runId: string) => `projects/${projectId}/narration/${runId}/../sample.wav`],
+    ['signed-url', (projectId: string, runId: string) => `https://storage.example/projects/${projectId}/narration/${runId}/sample.wav?signature=x`]
+  ])('refuses malformed GCS cleanup rows: %s', async (_label, objectKey) => {
+    const projectId = crypto.randomUUID(); const runId = crypto.randomUUID();
+    const gcs = {deleteMany: vi.fn()}; const deactivateProviderRun = vi.fn();
+    await expect(removeProviderArtifact(
+      {projectId, providerRunId: runId, provider: 'google_cloud_storage', providerArtifactId: objectKey(projectId, runId)},
+      {gcs, deactivateProviderRun}
+    )).rejects.toThrow('PROVIDER_ARTIFACT_GCS_KEY_INVALID');
+    expect(deactivateProviderRun).not.toHaveBeenCalled(); expect(gcs.deleteMany).not.toHaveBeenCalled();
   });
   it('rejects unverified callers before reconciliation', async () => {
     const reconcileExpired = vi.fn(); const reconcileArtifacts = vi.fn();

@@ -42,8 +42,8 @@ export async function PATCH(request: Request, context: RouteContext) {
     const {repository, authorize} = await dependencies(projectId);
     const body = reviewSchema.parse(await request.json());
     await authorizeEvidenceAccess(projectId, body.evidenceId, authorize, repository);
-    if (body.action === 'reject') return NextResponse.json(await repository.review(body.evidenceId, 'rejected'));
-    return NextResponse.json(await repository.review(body.evidenceId, body.action === 'correct' ? 'corrected' : 'confirmed', body.action === 'correct' ? body.correction : undefined));
+    if (body.action === 'reject') return NextResponse.json(await repository.review(projectId, body.evidenceId, 'rejected'));
+    return NextResponse.json(await repository.review(projectId, body.evidenceId, body.action === 'correct' ? 'corrected' : 'confirmed', body.action === 'correct' ? body.correction : undefined));
   } catch (error) {
     const code = error instanceof Error ? error.message : 'EVIDENCE_REVIEW_FAILED';
     return NextResponse.json({error: code}, {status: code === 'PROJECT_FORBIDDEN' ? 403 : code === 'EVIDENCE_NOT_FOUND' ? 404 : 400});

@@ -2,7 +2,7 @@ import {describe, expect, it, vi} from 'vitest';
 
 import {AuditService} from './audit-service';
 import {InMemoryAuditRepository} from './audit-repository';
-import {projectApprovedEvidenceLedger, projectNarrationLedger} from './audit-repository';
+import {projectApprovedEvidenceLedger, projectNarrationLedger, sha256Canonical} from './audit-repository';
 import type {EvidenceItem} from '../evidence/schemas';
 
 const projectId = crypto.randomUUID();
@@ -82,9 +82,25 @@ describe('AuditService', () => {
   it('audits and approves the actual creator narration transcript as a distinct target', async () => {
     const repository = new InMemoryAuditRepository(makeSnapshot()); const assetId = crypto.randomUUID();
     repository.seedCreatorAudio({projectId, assetId, transcriptId: crypto.randomUUID(), transcriptText: 'The actual Nova-3 words.'});
-    const service = new AuditService(repository, {audit: async (value) => repository.seedAudit({...value, auditId: crypto.randomUUID(), providerRunId: crypto.randomUUID(), status: 'passed', findings: []})}, async () => undefined);
+    const service = new AuditService(repository, {audit: async (value) => repository.seedAudit({...value, auditId: crypto.randomUUID(), providerRunId: crypto.randomUUID(), status: 'passed', findings: []})}, async () => undefined, {auditPromptVersion: 'test-prompt', auditSchemaVersion: 'test-schema', model: 'test-model'}, 'nova-3');
     const audit = await service.requestCreatorAudioAudit(projectId, assetId);
     expect(audit).toMatchObject({auditScope: 'creator_audio', assetId});
     await expect(service.approveCreatorAudioTranscript(projectId, assetId, audit.auditId, audit.narrationHash, audit.evidenceHash)).resolves.toMatchObject({creatorAudioApproved: true});
+  });
+
+  it('does not set creator approval when the transcript provider result is retired after the prior snapshot', async () => {
+    const snapshot = makeSnapshot(); const assetId = crypto.randomUUID(); const transcriptId = crypto.randomUUID();
+    const narrationHash = sha256Canonical({text: 'Current transcript'}); const evidenceHash = sha256Canonical(snapshot.evidence);
+    const audit = {projectId, storyboardId: snapshot.storyboardId, storyboardRevision: snapshot.storyboardRevision, auditId: crypto.randomUUID(), providerRunId: crypto.randomUUID(), evidenceHash, narrationHash, status: 'passed' as const, findings: [], auditPromptVersion: 'test-prompt', auditSchemaVersion: 'test-schema', model: 'test-model', auditScope: 'creator_audio' as const, assetId, transcriptId, transcriptProviderRunId: crypto.randomUUID()};
+    let approved = false; const providerActive = false;
+    const repository = {
+      findById: async () => audit,
+      loadCreatorAudioSnapshot: async () => ({...snapshot, evidence: snapshot.evidence, narration: [{sceneId: assetId, text: 'Current transcript', evidenceItemIds: snapshot.evidence.map((item) => item.id)}], auditScope: 'creator_audio' as const, assetId, transcriptId, transcriptProviderRunId: audit.transcriptProviderRunId}),
+      approveCreatorAudio: async () => { if (!providerActive) throw new Error('CREATOR_AUDIO_TRANSCRIPT_REQUIRED'); approved = true; return {creatorAudioApproved: true as const, auditId: audit.auditId}; }
+    };
+    const service = new AuditService(repository as never, {audit: async () => audit}, async () => undefined, {auditPromptVersion: 'test-prompt', auditSchemaVersion: 'test-schema', model: 'test-model'}, 'nova-3');
+
+    await expect(service.approveCreatorAudioTranscript(projectId, assetId, audit.auditId, narrationHash, evidenceHash)).rejects.toThrow('CREATOR_AUDIO_TRANSCRIPT_REQUIRED');
+    expect(approved).toBe(false);
   });
 });
