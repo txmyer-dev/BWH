@@ -1,11 +1,11 @@
 
 # Legacy Studio Provider Pivot and Memory Film Completion Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Current scope:** Tasks 6–11 are complete. Implement Task 12 as one minimal hackathon milestone; do not expand it into the superseded production backlog.
 
 **Goal:** Migrate the approved evidence-first story workflow to Gemini, add consented Deepgram transcription and Arcas narration plus a GPT-5.6 factuality gate, and finish the private downloadable Memory Film.
 
-**Architecture:** Keep the existing Next.js domain interfaces, PostgreSQL evidence ledger, private GCS media, and Cloud Tasks lease pattern. Add storage/processing consent and a provider-run control plane before any new external call, construct providers in one server factory, then build transcription, audit, narration, preview, render, deletion, and fixture paths in dependency order.
+**Architecture:** Keep the existing Next.js domain interfaces, PostgreSQL evidence ledger, private GCS media, and Cloud Tasks lease pattern. Add storage/processing consent and a provider-run control plane before any new external call, construct providers in one server factory, then finish one restrained Remotion film, a private MP4 download, and a minimal Cloud Run deployment.
 
 **Tech Stack:** Node.js 24+, Next.js 16.2.10, TypeScript 5.9+, React 19.2.7, PostgreSQL/Drizzle 0.45.2, `@google/genai` 2.11.0, `@deepgram/sdk` 5.5.0, OpenAI 6.46.0, Azure Speech SDK 1.50.0, Remotion 4.0.489, Google Cloud Storage/Tasks/Run, Vitest 4.1.10, Playwright 1.61.1.
 
@@ -33,9 +33,8 @@
 - `src/features/transcription/*`: Nova-3 normalization, transcript persistence, evidence creation, and creator-audio transcription.
 - `src/features/audit/*`: text-only GPT-5.6 audit contract, storyboard state gate, and exact-hash approvals.
 - `src/features/narration/*`: Arcas/Azure adapters, creator-audio selection, scene-level audio reuse, and disclosures.
-- `src/features/film/*`: validated manifests, Remotion composition, preview, render orchestration, and download.
-- `src/features/projects/project-deletion-service.ts`: access revocation, object deletion, provider cleanup, and final cascade.
-- `tests/e2e/*` and `fixtures/demo/*`: deterministic no-credit judge path and explicit live-provider smoke path.
+- `src/features/film/*`: a validated manifest, one Remotion composition, synchronous demo render, and private download.
+- `scripts/deploy.ps1` and `cloudbuild.yaml`: the smallest reproducible Cloud Run deployment path.
 
 ---
 
@@ -208,7 +207,7 @@ Implement `project_provider_budgets`, `provider_runs`, and `provider_artifacts` 
 
 - [ ] **Step 4: Implement durable cleanup and generalized tasks**
 
-Expand `TaskQueue` to a discriminated union with `providerRunId` in deterministic Cloud Task names. Persist a Gemini file identifier before use; immediate deletion marks it deleted, while failures set `cleanup_pending`. Protect the reconciliation route with the same Google OIDC issuer/audience/service-account verification standard as processing routes; it reconciles ambiguous deadlines and due provider-artifact cleanup. Project deletion retains cleanup rows until provider deletion succeeds or documented expiry is confirmed. Add an owner-only GET route and compact project-page panel showing operation, provider, status, cache reuse, request count, and estimated cost with the label “Estimate, not final billing.” Task 15 must provision the recurring Cloud Scheduler invocation.
+Expand `TaskQueue` to a discriminated union with `providerRunId` in deterministic Cloud Task names. Persist a Gemini file identifier before use; immediate deletion marks it deleted, while failures set `cleanup_pending`. Protect the reconciliation route with the same Google OIDC issuer/audience/service-account verification standard as processing routes; it reconciles ambiguous deadlines and due provider-artifact cleanup. Project deletion retains cleanup rows until provider deletion succeeds or documented expiry is confirmed. Add an owner-only GET route and compact project-page panel showing operation, provider, status, cache reuse, request count, and estimated cost with the label “Estimate, not final billing.” Recurring Cloud Scheduler provisioning is deferred beyond the minimal demo; the authenticated reconciliation route remains available for manual invocation during Build Week.
 
 Run: `npm test -- src/features/providers src/server/queue src/server/env.test.ts && npm run db:generate -- --name=provider_control_plane && npm run typecheck && npm run lint`
 
@@ -546,266 +545,87 @@ git commit -m "feat: narrate memory films with Arcas"
 
 ---
 
-### Task 12: Immutable Film Manifest and Browser Preview
+### Task 12: Minimal Demo Milestone — Remotion Film, MP4 Download, and GCP
+
+**Outcome:** A creator can turn the existing approved storyboard, images, authentic clips, and selected narration into one restrained Memory Film, render it as an MP4, download it privately, and demonstrate the same happy path from one Cloud Run deployment.
 
 **Files:**
+
 - Create: `src/features/film/manifest.ts`
-- Create: `src/features/film/theme.ts`
-- Create: `src/features/film/scene.tsx`
 - Create: `src/features/film/composition.tsx`
-- Create: `src/features/film/preview-projection.ts`
-- Create: `src/features/film/manifest.test.ts`
-- Create: `src/features/film/composition.test.tsx`
-- Create: `src/app/api/projects/[projectId]/film-manifest/route.ts`
-- Modify: `src/app/projects/[projectId]/page.tsx`
-- Modify: `src/app/globals.css`
-
-**Interfaces:**
-- Consumes: storyboard in `renderable` state, approved narration tracks or creator audio, private asset references, evidence IDs, and provider disclosure.
-- Produces: `createRenderManifest(projectId): Promise<RenderManifest>` containing stable private object keys, `createPreviewProjection(owner, manifest): Promise<PreviewManifest>` containing ephemeral signed URLs, and the shared `MemoryFilm` composition.
-
-- [ ] **Step 1: Write failing manifest and frame tests**
-
-```ts
-export const renderManifestSchema = z.object({
-  version: z.literal(1), width: z.literal(1920), height: z.literal(1080), fps: z.literal(30),
-  projectId: z.string().uuid(), storyboardRevision: z.number().int().nonnegative(),
-  evidenceHash: z.string().length(64), narrationHash: z.string().length(64),
-  scenes: z.array(renderSceneSchema).min(3), totalFrames: z.number().int().positive(),
-  disclosure: z.string().min(1)
-}).strict();
-```
-
-Test 120–240 second duration, exact summed frames, current passing audit/hash, text and audio selection approval, required evidence on narrative scenes, stable private object keys, credits disclosure, valid motion/transition presets, and deterministic output for unchanged inputs. Separately test that only an authorized owner can create an ephemeral preview projection, signed URLs never persist in the immutable manifest, and projection expiry does not alter the manifest HMAC.
-
-- [ ] **Step 2: Run RED**
-
-Run: `npm test -- src/features/film`
-
-Expected: FAIL because manifest and composition files do not exist.
-
-- [ ] **Step 3: Implement one restrained Remotion composition**
-
-Use `Sequence`, `Img`, `Audio`, and `interpolate` for title, media, authentic-audio, dedication, and credits scenes. Fix output at 1920×1080, 30 fps, cream-on-ink typography, safe-area captions, crossfades, and approved Ken Burns presets. Do not expose arbitrary CSS, arbitrary URLs, or a nonlinear timeline.
-
-- [ ] **Step 4: Add the shared browser preview and render gate**
-
-Use `@remotion/player` with the owner-authorized ephemeral preview projection of the immutable manifest. Preview may render smaller pixels but must preserve frames and timing. The later render worker resolves private object keys directly through its service identity, never through signed URLs. Disable “Prepare the gift” until the current evidence/narration hashes, audit, text approval, audio selection, durations, and disclosure validate.
-
-Run: `npm test -- src/features/film src/features/audit src/features/narration && npm run typecheck && npm run build`
-
-Expected: deterministic manifest and composition tests pass and the preview bundle builds.
-
-- [ ] **Step 5: Review and commit**
-
-Require visual/state review, then:
-
-```bash
-git add src/features/film src/app/api/projects src/app/projects src/app/globals.css
-git commit -m "feat: preview verified memory films"
-```
-
----
-
-### Task 13: Cloud Run Render, Status, and Private Download
-
-**Files:**
-- Create: `src/features/film/render-repository.ts`
+- Create: `src/features/film/remotion-root.tsx`
 - Create: `src/features/film/render-service.ts`
-- Create: `src/features/film/cloud-run-renderer.ts`
+- Create: `src/features/film/manifest.test.ts`
 - Create: `src/features/film/render-service.test.ts`
 - Create: `src/app/api/projects/[projectId]/render/route.ts`
 - Create: `src/app/api/projects/[projectId]/download/route.ts`
-- Create: `src/app/api/internal/render-complete/route.ts`
-- Create: `render-worker/index.ts`
-- Create: `render-worker/package.json`
-- Create: `render-worker/tsconfig.json`
-- Create: `render-worker/Dockerfile`
-- Modify: `src/server/db/schema.ts`
 - Modify: `src/app/projects/[projectId]/page.tsx`
-- Generate: `drizzle/0008_render_jobs.sql`, `drizzle/meta/0008_snapshot.json`, and update `drizzle/meta/_journal.json`
+- Modify: `src/app/globals.css`
+- Modify: `package.json`
+- Create or modify: `Dockerfile`, `cloudbuild.yaml`, `scripts/deploy.ps1`, `README.md`, and `.env.example`
 
 **Interfaces:**
-- Consumes: immutable `RenderManifest`, GCS service identity, Cloud Run Jobs, and owner authorization.
-- Produces: `requestRender(projectId): Promise<{jobId: string; status: string}>` and `getFilmDownload(projectId): Promise<{url: string; expiresAt: string}>`.
 
-- [ ] **Step 1: Write failing idempotency, callback, and authorization tests**
+- Consumes: the current renderable storyboard, approved text, selected generated or creator narration, authentic clips, private image object keys, and the provider disclosure.
+- Produces: one deterministic `MemoryFilm` composition, a private GCS MP4, and an owner-only download URL created at click time.
 
-Test one active render per manifest HMAC, completed render reuse, failed explicit retry against the same immutable manifest, stale callback rejection, owner-only render/status/download, fifteen-minute download expiry, no signed URL in logs, and no render when audit/approval hashes are stale.
+**Explicit non-goals:** No browser preview, separate render worker, Cloud Run Job, callback protocol, render-job database, automated retry system, deletion expansion, Cloud Scheduler provisioning, broad privacy/E2E matrix, or production-scale hardening. Those are post-hackathon work, not hidden completion requirements.
 
-- [ ] **Step 2: Run RED**
+- [ ] **Step 1: Write the smallest useful film tests**
 
-Run: `npm test -- src/features/film/render-service.test.ts`
+Test a deterministic manifest at 1920×1080 and 30 fps, exact scene/frame totals, current audit and approval hashes, approved audio selection, private object keys only, owner authorization, and render reuse when the manifest hash has not changed.
 
-Expected: FAIL because render orchestration does not exist.
+Run: `npm test -- src/features/film`
 
-- [ ] **Step 3: Implement Cloud Run Job launch and worker**
+Expected: FAIL because the film composition and render service do not exist.
 
-```ts
-export interface FilmRenderer {
-  launch(input: {renderJobId: string; projectId: string; manifestObjectKey: string}): Promise<{executionName: string}>;
-}
-```
+- [ ] **Step 2: Build one restrained Remotion film**
 
-Pass only project ID, render job ID, and manifest object key to the job. The worker downloads private inputs with its service identity, calls Remotion `renderMedia({codec: 'h264'})`, uploads `projects/<projectId>/renders/<manifestHmac>.mp4`, and calls the authenticated completion route. Local disk is bounded temporary workspace and is cleaned in `finally`.
+Use `Sequence`, `Img`, `Audio`, and `interpolate` for a title, chronological story scenes, authentic audio clips where available, dedication, and credits. Keep one fixed visual language: cream-on-ink typography, safe-area captions, crossfades, and a small approved set of Ken Burns motions. Do not add a theme editor or nonlinear timeline.
 
-- [ ] **Step 4: Add polling and click-time signed download**
+- [ ] **Step 3: Render in the existing web service**
 
-Poll only while pending/running, every three seconds. Request a fresh signed URL only when the owner clicks Download. Show recoverable failures without provider jargon.
+Bundle the Remotion composition during the container build. The owner-only render route runs `renderMedia({codec: 'h264'})` in bounded temporary storage, uploads the result to `projects/<projectId>/renders/<manifestHash>.mp4`, and cleans temporary files in `finally`. Configure the demo Cloud Run service with one render at a time, sufficient memory, and a request timeout long enough for the demo film. Reuse an existing MP4 when its manifest hash matches; return a clear retry message after a failure. Do not introduce a second service or job queue.
 
-Run: `npm test -- src/features/film && npm run db:generate -- --name=render_jobs && npm run typecheck && npm run build`
+- [ ] **Step 4: Add prepare-and-download UI**
 
-Expected: render idempotency, callback fencing, authorization, download expiry, and build checks pass.
+Add one “Prepare the gift” action with simple progress copy. After completion, show “Download MP4.” The download route verifies ownership and creates a fresh GCS signed URL with a fifteen-minute expiry. Never persist, log, or expose a public media URL.
 
-- [ ] **Step 5: Review and commit**
+Run: `npm test -- src/features/film && npm run typecheck && npm run build`
 
-Require review of service-account boundaries, job inputs, callback auth, and object-key isolation. Then:
+Expected: the manifest, authorization, render reuse, private download, and application build checks pass.
 
-```bash
-git add src/features/film src/app/api src/app/projects src/server/db render-worker drizzle
-git commit -m "feat: render and download private memory films"
-```
+- [ ] **Step 5: Deploy the smallest workable GCP version**
 
----
+Deploy one containerized Next.js service to Cloud Run using Cloud Build. Reuse the existing private GCS bucket, database, Secret Manager values, and least-privilege service account. The deploy script configures the render memory, concurrency, timeout, service URL, and required environment variables without printing secrets. Do not provision a render worker, Cloud Run Job, Cloud Scheduler job, or additional production infrastructure for this milestone.
 
-### Task 14: Deletion, Provider Cleanup, and Privacy Recovery
-
-**Files:**
-- Create: `src/features/projects/project-deletion-service.ts`
-- Create: `src/features/projects/project-deletion-service.test.ts`
-- Create: `src/app/api/projects/[projectId]/route.ts`
-- Create: `src/features/privacy/safe-log.ts`
-- Create: `src/features/privacy/safe-log.test.ts`
-- Modify: `src/features/projects/project-service.ts`
-- Modify: `src/features/providers/provider-artifact-service.ts`
-- Modify: `src/features/media/asset-service.ts`
-- Modify: `src/app/projects/[projectId]/page.tsx`
-
-**Interfaces:**
-- Consumes: all project object keys, provider-artifact cleanup queue, owner authorization, and private GCS deletion.
-- Produces: `ProjectDeletionService.request(projectId, ownerToken)` and `reconcile(projectId)` with `active -> deletion_pending -> deleted` lifecycle.
-
-- [ ] **Step 1: Write failing deletion and log-safety tests**
-
-Test owner-only deletion; immediate access/download revocation; collection of original, derivative, transcript, sample, narration, manifest, and render keys; provider cleanup before DB cascade; cleanup rows surviving provider outage; retry from `deletion_pending`; and logs excluding captions, transcripts, narration, raw provider payloads, credentials, and signed URLs.
-
-- [ ] **Step 2: Run RED**
-
-Run: `npm test -- src/features/projects/project-deletion-service.test.ts src/features/privacy`
-
-Expected: FAIL because deletion orchestration and safe logging do not exist.
-
-- [ ] **Step 3: Implement tombstoned deletion workflow**
-
-Require the owner to type the project title. Transactionally set `deletion_pending` and clear rendered download access. Delete local GCS objects idempotently, retry provider-artifact deletion until success or confirmed expiry, then delete the project row so cascades remove cleanup records only after they are no longer needed.
-
-- [ ] **Step 4: Add recovery UI and full privacy regression**
-
-Display deletion progress and retry safely. Keep restoration/transcription/narration failures recoverable without weakening consent or evidence gates.
-
-Run: `npm test && npm run typecheck && npm run lint && npm run build`
-
-Expected: the entire suite passes with safe logs and recoverable deletion.
-
-- [ ] **Step 5: Review and commit**
-
-Require privacy/deletion review, then:
-
-```bash
-git add src/features/projects src/features/providers src/features/media src/features/privacy src/app/api/projects src/app/projects src/server/db
-git commit -m "feat: delete private legacy projects safely"
-```
-
----
-
-### Task 15: Deterministic Demo, End-to-End Gate, and GCP Deployment
-
-**Files:**
-- Create: `fixtures/demo/fixture.json`
-- Create: `fixtures/demo/RIGHTS.md`
-- Create: three to five rights-cleared fixture images in `fixtures/demo/`
-- Create: one rights-cleared fixture audio clip in `fixtures/demo/`
-- Create: `tests/e2e/helpers.ts`
-- Create: `tests/e2e/happy-path.spec.ts`
-- Create: `tests/e2e/privacy-boundaries.spec.ts`
-- Create: `src/server/providers/fake-provider-factory.ts`
-- Create: `README.md`
-- Create: `.env.example`
-- Create: `cloudbuild.yaml`
-- Create: `scripts/deploy.ps1`
-- Modify: `playwright.config.ts`
-
-**Interfaces:**
-- Consumes: complete Tasks 6–14 application.
-- Produces: a reproducible no-credit judge journey, documented live-provider smoke procedure, deployed Cloud Run web service, and render job.
-
-- [ ] **Step 1: Create a rights-cleared deterministic fixture**
-
-Document provenance and permitted use in `RIGHTS.md`. `fixture.json` includes captions, known evidence, question answers, expected transcript segments, passing audit, Arcas selection, expected disclosures, and final manifest assertions. Do not use identifiable private family media in the repository.
-
-- [ ] **Step 2: Write failing Playwright journeys**
-
-```ts
-test('creates and downloads a consented Memory Film', async ({page}) => {
-  await page.goto('/projects/new');
-  await createFixtureProject(page);
-  await acceptStorageConsent(page);
-  await uploadFixture(page);
-  await acceptProcessingConsent(page, ['Google','Deepgram','OpenAI']);
-  await completeEvidenceStoryAuditAndArcasApproval(page);
-  await expect(page.getByRole('link', {name: 'Download MP4'})).toBeVisible();
-});
-```
-
-The privacy test proves upload is blocked before storage consent, processing is blocked before processing consent, Azure is absent when unconfigured, and OpenAI fake payload contains no media.
-
-- [ ] **Step 3: Add explicit fake-provider dependency injection**
-
-`E2E_PROVIDER_MODE=fake` is accepted only when `NODE_ENV !== 'production'`; production startup rejects it. Fakes return fixture-keyed schema-valid data and local WAV bytes without network calls. Re-run `npm run test:e2e`; expected: both journeys pass without API keys or credit.
-
-- [ ] **Step 4: Write operations documentation and deployment script**
-
-Document architecture, exact provider data routing, billing/paid-project verification, consent, environment variables, local commands, fake versus live tests, Deepgram opt-out, provider deletion limits, GCP service accounts, Secret Manager, Cloud SQL, GCS, Cloud Tasks, Cloud Scheduler, Cloud Run service/job, and Devpost judge path. `deploy.ps1` must reference secrets without printing them and use least-privilege identities. Before deploying live Gemini, the script requires the operator to confirm in Google AI Studio that the API-key project is marked Paid and that its project ID matches `GEMINI_PAID_PROJECT_ID`; it then injects `GEMINI_REQUIRE_PAID_PROJECT=true` and `GEMINI_PAID_PROJECT_VERIFIED=true`. Missing or mismatched confirmation must abort before deployment.
-
-Provision an authenticated Cloud Scheduler job named
-`legacy-studio-provider-reconciler` with a one-minute schedule, the reconciler
-URL, exact OIDC audience, and a dedicated least-privilege service account. Add a
-deployment test that reads the job configuration and asserts schedule, URI,
-audience, and service-account email.
-
-- [ ] **Step 5: Run the release gate**
+- [ ] **Step 6: Prove the judge path**
 
 ```bash
 npm test
 npm run typecheck
 npm run lint
 npm run build
-npm run test:e2e
-docker build -t legacy-studio-web:test .
-docker build -t legacy-studio-render:test render-worker
+docker build -t legacy-studio-demo:test .
 ```
 
-Expected: zero failures, errors, warnings treated as errors, or live provider calls; both images build.
-
-- [ ] **Step 6: Deploy only with explicit user approval**
-
-Run after approval: `powershell -File scripts/deploy.ps1`
-
-Expected: health check, create-project, storage consent, upload, processing consent, fixture story, audit, Arcas sample, render, private download, and deletion smoke checks pass. Do not print secrets or family content.
+After explicit deployment approval, run one manual happy path with rights-cleared or user-provided demo media: open a completed project, prepare the film, play the downloaded MP4 locally, and repeat the download from the deployed Cloud Run service. Routine automated checks must continue using fakes and must not spend provider credit.
 
 - [ ] **Step 7: Review and commit**
 
-Require final product, privacy, security, and release review. Then:
+Review only the film output, owner boundary, private object handling, signed-download expiry, container build, and demonstrated Cloud Run path. Then:
 
 ```bash
-git add fixtures tests src/server/providers README.md .env.example cloudbuild.yaml scripts playwright.config.ts
-git commit -m "docs: prepare the Memory Film judging path"
+git add src/features/film src/app/api/projects src/app/projects src/app/globals.css package.json Dockerfile cloudbuild.yaml scripts README.md .env.example
+git commit -m "feat: deliver the Memory Film demo"
 ```
+
+**Milestone complete when:** The deployed app can render one approved project into a playable MP4 and its owner can download that MP4. Anything beyond that sentence belongs in the post-hackathon backlog.
 
 ---
 
 ## Mandatory execution order
 
-Execute Tasks **6 → 7 → 8 → 9 → 10 → 11 → 12 → 13 → 14 → 15**. Consent and provider-run infrastructure must land before any Gemini or Deepgram integration. Each task uses a fresh implementer subagent, then a specification review and code-quality review before the next task begins.
+Tasks **6 → 7 → 8 → 9 → 10 → 11** are complete. Execute only **Task 12** next. Completion means a Remotion film renders, its owner can download the MP4, and the same path works on the minimal Cloud Run deployment. Do not revive superseded Tasks 13–15 as implicit requirements.
 
 The original `2026-07-14-legacy-studio-memory-film-mvp.md` remains historical context only wherever it conflicts with this plan or the approved provider-pivot specification.
