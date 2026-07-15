@@ -4,6 +4,7 @@ import {and, eq, lte, or, sql} from 'drizzle-orm';
 import type {Database} from '../../server/db/client';
 import {evidenceItems, processingJobs, transcriptEvidenceSegments} from '../../server/db/schema';
 import type {EvidenceCandidate} from '../story/schemas';
+import {invalidateDownstreamStoryState} from '../story/story-service';
 import type {EvidenceItem, VerificationStatus} from './schemas';
 
 export interface AnalysisJob {
@@ -134,9 +135,12 @@ export class PostgresEvidenceRepository implements EvidenceRepository {
   }
 
   async review(id: string, status: Exclude<VerificationStatus, 'proposed'>, correction?: string) {
-    const [row] = await this.database.update(evidenceItems).set({verificationStatus: status, correction: correction ?? null, updatedAt: new Date()}).where(and(eq(evidenceItems.id, id), eq(evidenceItems.verificationStatus, 'proposed'))).returning();
-    if (!row) throw new Error('EVIDENCE_ALREADY_REVIEWED');
-    return mapEvidence(row);
+    return this.database.transaction(async (transaction) => {
+      const [row] = await transaction.update(evidenceItems).set({verificationStatus: status, correction: correction ?? null, updatedAt: new Date()}).where(and(eq(evidenceItems.id, id), eq(evidenceItems.verificationStatus, 'proposed'))).returning();
+      if (!row) throw new Error('EVIDENCE_ALREADY_REVIEWED');
+      await invalidateDownstreamStoryState(transaction, row.projectId);
+      return mapEvidence(row);
+    });
   }
 
   async listByProject(projectId: string) {

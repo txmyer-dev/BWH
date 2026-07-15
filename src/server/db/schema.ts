@@ -203,6 +203,13 @@ export const storyboards = pgTable(
     ),
     targetDurationSeconds: integer('target_duration_seconds').default(180).notNull(),
     revision: integer('revision').default(0).notNull(),
+    currentAuditId: uuid('current_audit_id'),
+    narrationApprovedAt: timestamp('narration_approved_at', {withTimezone: true}),
+    narrationApprovalAuditId: uuid('narration_approval_audit_id'),
+    narrationApprovalEvidenceHash: varchar('narration_approval_evidence_hash', {length: 64}),
+    narrationApprovalHash: varchar('narration_approval_hash', {length: 64}),
+    audioApprovedAt: timestamp('audio_approved_at', {withTimezone: true}),
+    narrationTrackSelection: jsonb('narration_track_selection'),
     renderManifest: jsonb('render_manifest'),
     ...timestamps
   },
@@ -304,6 +311,23 @@ export const providerRuns = pgTable('provider_runs', {
   index('provider_runs_dispatch_deadline_idx').on(table.dispatchDeadlineAt).where(sql`${table.status} = 'dispatching'`),
   foreignKey({name: 'provider_runs_retry_of_run_id_provider_runs_id_fk', columns: [table.retryOfRunId], foreignColumns: [table.id]}).onDelete('set null'),
   index('provider_runs_retry_of_run_idx').on(table.retryOfRunId)
+]);
+
+export const factualityAudits = pgTable('factuality_audits', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull().references(() => projects.id, {onDelete: 'cascade'}),
+  storyboardId: uuid('storyboard_id').notNull().references(() => storyboards.id, {onDelete: 'cascade'}),
+  providerRunId: uuid('provider_run_id').notNull().references(() => providerRuns.id, {onDelete: 'cascade'}),
+  storyboardRevision: integer('storyboard_revision').notNull(),
+  evidenceHash: varchar('evidence_hash', {length: 64}).notNull(),
+  narrationHash: varchar('narration_hash', {length: 64}).notNull(),
+  status: varchar('status', {length: 20}).notNull(),
+  findings: jsonb('findings').notNull(),
+  createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
+}, (table) => [
+  check('factuality_audits_status_check', sql`${table.status} IN ('passed','blocked')`),
+  uniqueIndex('factuality_audits_provider_run_unique').on(table.providerRunId),
+  index('factuality_audits_project_storyboard_idx').on(table.projectId, table.storyboardId)
 ]);
 
 export const providerRunResults = pgTable('provider_run_results', {

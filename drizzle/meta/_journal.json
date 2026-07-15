@@ -57,6 +57,13 @@
       "when": 1784071978849,
       "tag": "0007_asset_transcripts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784075298426,
+      "tag": "0008_factuality_audits",
+      "breakpoints": true
     }
   ]
 }

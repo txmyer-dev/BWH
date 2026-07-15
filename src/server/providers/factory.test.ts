@@ -2,6 +2,7 @@ import {describe, expect, it, vi} from 'vitest';
 
 import {createProviderServices} from './factory';
 import {InMemoryProviderStructuredResultStore} from '../../features/story/gemini-story-agent';
+import {InMemoryAuditRepository} from '../../features/audit/audit-repository';
 
 const env = {NODE_ENV: 'production' as const, GEMINI_API_KEY: 'secret', GEMINI_STORY_MODEL: 'gemini-3.1-flash-lite', GEMINI_REQUIRE_PAID_PROJECT: true, GEMINI_PAID_PROJECT_VERIFIED: true, GEMINI_PAID_PROJECT_ID: 'project-a', GCP_PROJECT_ID: 'project-a', DEEPGRAM_TRANSCRIPTION_MODEL: 'nova-3'};
 const deps = {executor: {execute: vi.fn()}, resultStore: new InMemoryProviderStructuredResultStore(), createGeminiClient: vi.fn(() => ({models: {}, files: {}}))};
@@ -44,5 +45,17 @@ describe('createProviderServices', () => {
   });
   it('fails closed for an unpriced live Deepgram transcription model', () => {
     expect(() => createProviderServices({...env, DEEPGRAM_API_KEY: 'secret', DEEPGRAM_TRANSCRIPTION_MODEL: 'nova-future'}, {...deps, createDeepgramClient: vi.fn(() => ({listen: {prerecorded: {transcribeFile: vi.fn()}}}))} as never)).toThrow('DEEPGRAM_TRANSCRIPTION_MODEL_UNPRICED');
+  });
+
+  it('keeps primary startup healthy without OpenAI and constructs the audit path only when configured', () => {
+    expect(createProviderServices(env, deps as never).factualityAuditor).toBeUndefined();
+    const createOpenAIClient = vi.fn(() => ({responses: {parse: vi.fn()}}));
+    const services = createProviderServices({...env, NODE_ENV: 'test'}, {...deps, createOpenAIClient, auditRepository: new InMemoryAuditRepository()} as never);
+    expect(services.factualityAuditor).toBeTruthy();
+    expect(createOpenAIClient).toHaveBeenCalledWith(undefined);
+  });
+
+  it('fails closed for an unpriced configured OpenAI audit model', () => {
+    expect(() => createProviderServices({...env, NODE_ENV: 'test', OPENAI_AUDIT_MODEL: 'gpt-next'}, {...deps, createOpenAIClient: vi.fn(() => ({responses: {parse: vi.fn()}})), auditRepository: new InMemoryAuditRepository()} as never)).toThrow('OPENAI_AUDIT_MODEL_PRICING_UNKNOWN');
   });
 });

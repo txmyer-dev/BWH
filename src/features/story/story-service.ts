@@ -3,7 +3,8 @@ import {and, asc, eq, sql} from 'drizzle-orm';
 import {z} from 'zod';
 
 import type {Database} from '../../server/db/client';
-import {evidenceItems, filmScenes, interviewAnswers, interviewQuestions, storyboards, voiceProfiles} from '../../server/db/schema';
+import {evidenceItems, filmScenes, interviewAnswers, interviewQuestions, projects, storyboards, voiceProfiles} from '../../server/db/schema';
+import type {ProviderDatabaseTransaction} from '../providers/types';
 import type {EvidenceItem} from '../evidence/schemas';
 import type {AssetRepository} from '../media/asset-service';
 
@@ -36,6 +37,17 @@ export type Question = {id: string; projectId: string; question: string; reason:
 export type Storyboard = {
   id: string; projectId: string; title: string; theme: string;
   targetDurationSeconds: number; voiceProfile: VoiceProfile; revision: number; scenes: FilmScene[];
+};
+
+export const invalidateDownstreamStoryState = async (transaction: ProviderDatabaseTransaction, projectId: string, storyboardId?: string, bumpRevision = true) => {
+  const boards = storyboardId
+    ? await transaction.select({id: storyboards.id}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)))
+    : await transaction.select({id: storyboards.id}).from(storyboards).where(eq(storyboards.projectId, projectId));
+  for (const board of boards) {
+    await transaction.update(storyboards).set({currentAuditId: null, narrationApprovedAt: null, narrationApprovalAuditId: null, narrationApprovalEvidenceHash: null, narrationApprovalHash: null, audioApprovedAt: null, narrationTrackSelection: null, renderManifest: null, ...(bumpRevision ? {revision: sql`${storyboards.revision} + 1`} : {}), updatedAt: new Date()}).where(eq(storyboards.id, board.id));
+    await transaction.update(filmScenes).set({generatedNarrationObjectKey: null, updatedAt: new Date()}).where(eq(filmScenes.storyboardId, board.id));
+  }
+  await transaction.update(projects).set({renderedFilmObjectKey: null, renderedAt: null, updatedAt: new Date()}).where(eq(projects.id, projectId));
 };
 type StoryboardCreate = Omit<Storyboard, 'id' | 'projectId' | 'revision' | 'scenes'> & {scenes: FilmSceneInput[]};
 
@@ -412,6 +424,7 @@ export class PostgresStoryRepository implements StoryRepository {
       if (existing) {
         await transaction.update(interviewAnswers).set({answer, updatedAt: new Date()}).where(eq(interviewAnswers.id, existing.id));
         await transaction.update(evidenceItems).set({claim: answer, sourceExcerpt: answer, updatedAt: new Date()}).where(eq(evidenceItems.creatorAnswerId, existing.id));
+        await invalidateDownstreamStoryState(transaction, projectId);
         return;
       }
       const answerId = randomUUID();
@@ -421,6 +434,7 @@ export class PostgresStoryRepository implements StoryRepository {
         claim: answer, originalClaim: answer, sourceAssetIds: [], sourceExcerpt: answer,
         confidence: 1, verificationStatus: 'confirmed'
       });
+      await invalidateDownstreamStoryState(transaction, projectId);
     });
   }
   async findStoryboard(projectId: string) {
@@ -452,6 +466,7 @@ export class PostgresStoryRepository implements StoryRepository {
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, scene.durationSeconds);
       if (total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
       const inserted = await transaction.insert(filmScenes).values({id: randomUUID(), storyboardId, sequenceOrder: current.length, ...scene}).returning();
+      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false);
       await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
       return inserted;
     });
@@ -468,6 +483,7 @@ export class PostgresStoryRepository implements StoryRepository {
       const current = await transaction.select().from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, 0);
       if (total < 120 || total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
+      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false);
       await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
     });
     return (await this.findStoryboard(projectId))!;
@@ -482,6 +498,7 @@ export class PostgresStoryRepository implements StoryRepository {
       const currentIds = new Set(current.map((scene) => scene.id));
       if (orderedSceneIds.length !== current.length || new Set(orderedSceneIds).size !== current.length || orderedSceneIds.some((id) => !currentIds.has(id))) throw new Error('INVALID_SCENE_ORDER');
       for (const [sequenceOrder, id] of orderedSceneIds.entries()) await transaction.update(filmScenes).set({sequenceOrder}).where(and(eq(filmScenes.id, id), eq(filmScenes.storyboardId, storyboardId)));
+      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false);
       await transaction.update(storyboards).set({revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
     });
     return (await this.findStoryboard(projectId))!;
@@ -497,6 +514,7 @@ export class PostgresStoryRepository implements StoryRepository {
       const current = await transaction.select().from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, 0);
       if (total < 120 || total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
+      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false);
       await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
     });
     return (await this.findStoryboard(projectId))!;

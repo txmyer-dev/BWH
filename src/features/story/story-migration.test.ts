@@ -7,7 +7,7 @@ const directory = join(process.cwd(), 'drizzle');
 describe('storyboard revision migration history', () => {
   it('upgrades an existing 0000 database with a truthful 0001 ALTER', () => {
     const migrations = readdirSync(directory).filter((name) => /^\d+_.+\.sql$/.test(name)).sort();
-    expect(migrations).toHaveLength(8);
+    expect(migrations).toHaveLength(9);
     const initial = readFileSync(join(directory, migrations[0]), 'utf8');
     const revision = readFileSync(join(directory, migrations[1]), 'utf8');
     expect(initial).not.toContain('"revision" integer');
@@ -40,6 +40,13 @@ describe('storyboard revision migration history', () => {
     expect(migration).toContain('ALTER TABLE "processing_jobs" ADD COLUMN "provider_run_id" uuid');
   });
 
+  it('keeps the factuality audit migration strictly additive', () => {
+    const migration = readFileSync(join(directory, '0008_factuality_audits.sql'), 'utf8');
+    expect(migration).not.toMatch(/DROP\s|TRUNCATE\s|DELETE FROM/);
+    expect(migration).toContain('CREATE TABLE "factuality_audits"');
+    expect(migration).toContain('ALTER TABLE "storyboards" ADD COLUMN "narration_approval_hash"');
+  });
+
   it('keeps fresh and upgraded processing-job index predicates in parity', () => {
     const initial = readFileSync(join(directory, '0000_hard_shadowcat.sql'), 'utf8');
     const task9 = readFileSync(join(directory, '0007_asset_transcripts.sql'), 'utf8');
@@ -61,6 +68,7 @@ describe('storyboard revision migration history', () => {
     const providers = JSON.parse(readFileSync(join(directory, 'meta', '0003_snapshot.json'), 'utf8')) as {prevId: string; tables: Record<string, {columns: Record<string, unknown>}>};
     const providerFixes = JSON.parse(readFileSync(join(directory, 'meta', '0004_snapshot.json'), 'utf8')) as {prevId: string; tables: Record<string, {columns: Record<string, unknown>}>};
     const transcripts = JSON.parse(readFileSync(join(directory, 'meta', '0007_snapshot.json'), 'utf8')) as {prevId: string; tables: Record<string, {columns: Record<string, unknown>}>};
+    const audits = JSON.parse(readFileSync(join(directory, 'meta', '0008_snapshot.json'), 'utf8')) as {prevId: string; tables: Record<string, {columns: Record<string, unknown>}>};
     expect(journal.entries.map(({idx, tag}) => ({idx, tag}))).toEqual([
       {idx: 0, tag: '0000_hard_shadowcat'},
       {idx: 1, tag: expect.stringMatching(/^0001_/)},
@@ -69,7 +77,8 @@ describe('storyboard revision migration history', () => {
       {idx: 4, tag: '0004_provider_control_plane_review_fixes'},
       {idx: 5, tag: '0005_retire_legacy_analysis_jobs'},
       {idx: 6, tag: '0006_provider_run_results'},
-      {idx: 7, tag: '0007_asset_transcripts'}
+      {idx: 7, tag: '0007_asset_transcripts'},
+      {idx: 8, tag: '0008_factuality_audits'}
     ]);
     expect(initial.tables['public.storyboards'].columns).not.toHaveProperty('revision');
     expect(next.prevId).toBe(initial.id);
@@ -87,5 +96,8 @@ describe('storyboard revision migration history', () => {
     expect(transcripts.tables).toHaveProperty('public.transcript_evidence_segments');
     expect(transcripts.tables['public.film_scenes'].columns).toHaveProperty('authentic_clip');
     expect(transcripts.tables['public.processing_jobs'].columns).toHaveProperty('provider_run_id');
+    expect(audits.prevId).toBe((JSON.parse(readFileSync(join(directory, 'meta', '0007_snapshot.json'), 'utf8')) as {id: string}).id);
+    expect(audits.tables).toHaveProperty('public.factuality_audits');
+    expect(audits.tables['public.storyboards'].columns).toHaveProperty('narration_approval_hash');
   });
 });
