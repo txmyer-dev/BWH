@@ -571,6 +571,8 @@ git commit -m "feat: narrate memory films with Arcas"
 
 **Explicit non-goals:** No browser preview, separate render worker, Cloud Run Job, callback protocol, render-job database, automated retry system, deletion expansion, Cloud Scheduler provisioning, broad privacy/E2E matrix, or production-scale hardening. Those are post-hackathon work, not hidden completion requirements.
 
+**Deferred, not canceled:** These capabilities remain part of the intended system and should be added after the hackathon. They are excluded from today's milestone only because the available time and budget cannot support them responsibly; this scope decision does not abandon them.
+
 - [ ] **Step 1: Write the smallest useful film tests**
 
 Test a deterministic manifest at 1920×1080 and 30 fps, exact scene/frame totals, current audit and approval hashes, approved audio selection, private object keys only, owner authorization, and render reuse when the manifest hash has not changed.
@@ -620,7 +622,7 @@ git add src/features/film src/app/api/projects src/app/projects src/app/globals.
 git commit -m "feat: deliver the Memory Film demo"
 ```
 
-**Milestone complete when:** The deployed app can render one approved project into a playable MP4 and its owner can download that MP4. Anything beyond that sentence belongs in the post-hackathon backlog.
+**Milestone complete when:** The deployed app can render one approved project into a playable MP4 and its owner can download that MP4. Anything beyond that sentence remains planned in the post-hackathon backlog.
 
 ---
 
