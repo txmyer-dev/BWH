@@ -331,6 +331,7 @@ export const factualityAudits = pgTable('factuality_audits', {
   auditScope: varchar('audit_scope', {length: 30}).default('narration_text').notNull(),
   creatorNarrationAssetId: uuid('creator_narration_asset_id').references(() => assets.id, {onDelete: 'cascade'}),
   creatorTranscriptId: uuid('creator_transcript_id').references(() => assetTranscripts.id, {onDelete: 'cascade'}),
+  creatorTranscriptProviderRunId: uuid('creator_transcript_provider_run_id').references(() => providerRuns.id, {onDelete: 'cascade'}),
   createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
 }, (table) => [
   check('factuality_audits_status_check', sql`${table.status} IN ('passed','blocked')`),

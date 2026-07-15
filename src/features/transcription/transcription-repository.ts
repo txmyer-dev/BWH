@@ -6,6 +6,7 @@ import {assetTranscripts, assets as mediaAssets, evidenceItems, processingJobs, 
 import type {ProviderResultWriter} from '../providers/types';
 import {transcriptSchema, type Transcript} from './transcriber';
 import type {EvidenceRepository} from '../evidence/evidence-repository';
+import {invalidateDownstreamStoryState} from '../story/story-service';
 
 export type AssetTranscript = Transcript & {
   id: string; projectId: string; assetId: string; providerRunId: string; createdAt: Date;
@@ -56,7 +57,8 @@ export class PostgresTranscriptionRepository implements TranscriptionRepository 
         confidence: valid.confidence, durationMs: valid.durationMs, segments: valid.segments, createdAt: new Date()
       }}).returning();
       if (!row) throw new Error('TRANSCRIPT_PERSIST_FAILED');
-      await transaction.update(mediaAssets).set({metadata: sql`${mediaAssets.metadata} || ${JSON.stringify({durationMs: valid.durationMs})}::jsonb`, updatedAt: new Date()}).where(and(eq(mediaAssets.id, input.assetId), eq(mediaAssets.projectId, input.projectId)));
+      const [asset] = await transaction.select({kind: mediaAssets.assetKind}).from(mediaAssets).where(and(eq(mediaAssets.id, input.assetId), eq(mediaAssets.projectId, input.projectId)));
+      await transaction.update(mediaAssets).set({metadata: sql`${mediaAssets.metadata} || ${JSON.stringify({durationMs: valid.durationMs})}::jsonb`, creatorTranscriptAuditId: null, creatorTranscriptApprovalHash: null, updatedAt: new Date()}).where(and(eq(mediaAssets.id, input.assetId), eq(mediaAssets.projectId, input.projectId)));
       await transaction.delete(evidenceItems).where(and(
         eq(evidenceItems.projectId, input.projectId), eq(evidenceItems.assetId, input.assetId),
         eq(evidenceItems.type, 'transcript'), eq(evidenceItems.verificationStatus, 'proposed')
@@ -70,6 +72,7 @@ export class PostgresTranscriptionRepository implements TranscriptionRepository 
         await transaction.insert(evidenceItems).values(evidenceRows);
         await transaction.insert(transcriptEvidenceSegments).values(evidenceRows.map((evidence, index) => ({evidenceItemId: evidence.id, transcriptId: row.id, projectId: input.projectId, assetId: input.assetId, startMs: valid.segments[index].startMs, endMs: valid.segments[index].endMs})));
       }
+      if (asset?.kind === 'creator_narration') await invalidateDownstreamStoryState(transaction, input.projectId);
       persisted = map(row);
     });
     if (!persisted) throw new Error('TRANSCRIPT_PERSIST_FAILED');

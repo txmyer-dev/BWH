@@ -12,6 +12,17 @@ const wav = () => {
 };
 
 describe('DeepgramNarration', () => {
+  it.each([
+    ['bad RIFF length', (bytes: Buffer) => { bytes.writeUInt32LE(bytes.length, 4); }],
+    ['bad block alignment', (bytes: Buffer) => { bytes.writeUInt16LE(4, 32); }],
+    ['bad byte rate', (bytes: Buffer) => { bytes.writeUInt32LE(1, 28); }],
+    ['misaligned data', (bytes: Buffer) => { bytes.writeUInt32LE(31_999, 40); }],
+    ['trailing bytes', (bytes: Buffer) => Buffer.concat([bytes, Buffer.from([0])])]
+  ])('rejects malformed PCM WAV: %s', async (_name, mutate) => {
+    const source = wav(); const malformed = mutate(source) ?? source;
+    const request = vi.fn(async () => new Response(malformed, {status: 200}));
+    await expect(new DeepgramNarration('secret', {request}).synthesize({text: 'Approved.', voice: 'aura-2-arcas-en', requestId: 'safe'})).rejects.toThrow('NARRATION_AUDIO_INVALID');
+  });
   it('sends only approved narration to the Arcas opt-out WAV endpoint with abort', async () => {
     let captured: [string, RequestInit]|undefined;
     const request = vi.fn(async (...args: [string, RequestInit]) => { captured = args; return new Response(wav(), {status: 200}); });

@@ -24,6 +24,7 @@ export type FactualityAuditInput = {
   auditScope?: 'narration_text'|'creator_audio';
   assetId?: string;
   transcriptId?: string;
+  transcriptProviderRunId?: string;
 };
 export type FactualityAuditResult = {
   auditId: string;
@@ -41,4 +42,5 @@ export type FactualityAuditResult = {
   auditScope?: 'narration_text'|'creator_audio';
   assetId?: string;
   transcriptId?: string;
+  transcriptProviderRunId?: string;
 };

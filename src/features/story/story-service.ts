@@ -1,9 +1,9 @@
 import {randomUUID} from 'node:crypto';
-import {and, asc, eq, sql} from 'drizzle-orm';
+import {and, asc, eq, inArray, sql} from 'drizzle-orm';
 import {z} from 'zod';
 
 import type {Database} from '../../server/db/client';
-import {evidenceItems, filmScenes, interviewAnswers, interviewQuestions, projects, storyboards, voiceProfiles} from '../../server/db/schema';
+import {assets, evidenceItems, filmScenes, interviewAnswers, interviewQuestions, narrationSamples, narrationTracks, projects, providerArtifacts, providerRuns, storyboards, voiceProfiles} from '../../server/db/schema';
 import type {ProviderDatabaseTransaction} from '../providers/types';
 import type {EvidenceItem} from '../evidence/schemas';
 import type {AssetRepository} from '../media/asset-service';
@@ -39,14 +39,28 @@ export type Storyboard = {
   targetDurationSeconds: number; voiceProfile: VoiceProfile; revision: number; scenes: FilmScene[];
 };
 
-export const invalidateDownstreamStoryState = async (transaction: ProviderDatabaseTransaction, projectId: string, storyboardId?: string, bumpRevision = true) => {
+const retirePrivateNarration = async (transaction: ProviderDatabaseTransaction, projectId: string, rows: {providerRunId: string; objectKey: string}[]) => {
+  if (!rows.length) return;
+  await transaction.insert(providerArtifacts).values(rows.map((row) => ({id: randomUUID(), projectId, providerRunId: row.providerRunId, provider: 'google_cloud_storage', providerArtifactId: row.objectKey, status: 'cleanup_pending', expiresAt: new Date()}))).onConflictDoNothing();
+  await transaction.update(providerRuns).set({activeResult: false, updatedAt: new Date()}).where(inArray(providerRuns.id, rows.map((row) => row.providerRunId)));
+};
+
+export const invalidateDownstreamStoryState = async (transaction: ProviderDatabaseTransaction, projectId: string, storyboardId?: string, bumpRevision = true, affectedSceneIds?: string[]) => {
+  await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}), hashtext('narration'))`);
   const boards = storyboardId
     ? await transaction.select({id: storyboards.id}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)))
     : await transaction.select({id: storyboards.id}).from(storyboards).where(eq(storyboards.projectId, projectId));
   for (const board of boards) {
+    const samples = await transaction.select({providerRunId: narrationSamples.providerRunId, objectKey: narrationSamples.objectKey}).from(narrationSamples).where(eq(narrationSamples.storyboardId, board.id));
+    await retirePrivateNarration(transaction, projectId, samples); await transaction.delete(narrationSamples).where(eq(narrationSamples.storyboardId, board.id));
+    if (affectedSceneIds?.length) {
+      const tracks = await transaction.select({providerRunId: narrationTracks.providerRunId, objectKey: narrationTracks.objectKey}).from(narrationTracks).where(and(eq(narrationTracks.storyboardId, board.id), inArray(narrationTracks.sceneId, affectedSceneIds)));
+      await retirePrivateNarration(transaction, projectId, tracks); await transaction.delete(narrationTracks).where(and(eq(narrationTracks.storyboardId, board.id), inArray(narrationTracks.sceneId, affectedSceneIds)));
+      await transaction.update(filmScenes).set({generatedNarrationObjectKey: null, updatedAt: new Date()}).where(and(eq(filmScenes.storyboardId, board.id), inArray(filmScenes.id, affectedSceneIds)));
+    }
     await transaction.update(storyboards).set({currentAuditId: null, narrationApprovedAt: null, narrationApprovalAuditId: null, narrationApprovalEvidenceHash: null, narrationApprovalHash: null, audioApprovedAt: null, narrationTrackSelection: null, renderManifest: null, ...(bumpRevision ? {revision: sql`${storyboards.revision} + 1`} : {}), updatedAt: new Date()}).where(eq(storyboards.id, board.id));
-    await transaction.update(filmScenes).set({generatedNarrationObjectKey: null, updatedAt: new Date()}).where(eq(filmScenes.storyboardId, board.id));
   }
+  await transaction.update(assets).set({creatorTranscriptAuditId: null, creatorTranscriptApprovalHash: null, updatedAt: new Date()}).where(and(eq(assets.projectId, projectId), eq(assets.assetKind, 'creator_narration')));
   await transaction.update(projects).set({renderedFilmObjectKey: null, renderedAt: null, updatedAt: new Date()}).where(eq(projects.id, projectId));
 };
 type StoryboardCreate = Omit<Storyboard, 'id' | 'projectId' | 'revision' | 'scenes'> & {scenes: FilmSceneInput[]};
@@ -478,12 +492,14 @@ export class PostgresStoryRepository implements StoryRepository {
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
       const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
       if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
+      const [before] = await transaction.select({narrationText: filmScenes.narrationText, evidenceItemIds: filmScenes.evidenceItemIds}).from(filmScenes).where(and(eq(filmScenes.id, sceneId), eq(filmScenes.storyboardId, storyboardId)));
       const [updated] = await transaction.update(filmScenes).set(change).where(and(eq(filmScenes.id, sceneId), eq(filmScenes.storyboardId, storyboardId))).returning();
       if (!updated) throw new Error('SCENE_NOT_FOUND');
       const current = await transaction.select().from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, 0);
       if (total < 120 || total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
-      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false);
+      const narrationChanged = before?.narrationText !== updated.narrationText || JSON.stringify(before?.evidenceItemIds) !== JSON.stringify(updated.evidenceItemIds);
+      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false, narrationChanged ? [sceneId] : undefined);
       await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
     });
     return (await this.findStoryboard(projectId))!;
@@ -509,12 +525,14 @@ export class PostgresStoryRepository implements StoryRepository {
       await transaction.execute(sql`select pg_advisory_xact_lock(hashtext(${storyboardId}))`);
       const [board] = await transaction.select({revision: storyboards.revision}).from(storyboards).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId)));
       if (!board || board.revision !== expectedRevision) throw new Error('STORYBOARD_CONFLICT');
+      const [before] = await transaction.select({narrationText: filmScenes.narrationText, evidenceItemIds: filmScenes.evidenceItemIds}).from(filmScenes).where(and(eq(filmScenes.id, sceneId), eq(filmScenes.storyboardId, storyboardId)));
       const [updated] = await transaction.update(filmScenes).set(scene).where(and(eq(filmScenes.id, sceneId), eq(filmScenes.storyboardId, storyboardId))).returning();
       if (!updated) throw new Error('SCENE_NOT_FOUND');
       const current = await transaction.select().from(filmScenes).where(eq(filmScenes.storyboardId, storyboardId));
       const total = current.reduce((sum, candidate) => sum + candidate.durationSeconds, 0);
       if (total < 120 || total > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
-      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false);
+      const narrationChanged = before?.narrationText !== updated.narrationText || JSON.stringify(before?.evidenceItemIds) !== JSON.stringify(updated.evidenceItemIds);
+      await invalidateDownstreamStoryState(transaction, projectId, storyboardId, false, narrationChanged ? [sceneId] : undefined);
       await transaction.update(storyboards).set({targetDurationSeconds: total, revision: expectedRevision + 1, updatedAt: new Date()}).where(and(eq(storyboards.id, storyboardId), eq(storyboards.projectId, projectId), eq(storyboards.revision, expectedRevision)));
     });
     return (await this.findStoryboard(projectId))!;

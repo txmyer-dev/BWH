@@ -56,4 +56,15 @@ describe('NarrationService', () => {
     repo.approveCreatorTranscript(projectId, assetId);
     await expect(service.approveAudioSelection(projectId, {kind: 'creator', assetId})).resolves.toMatchObject({kind: 'creator'});
   });
+
+  it('fences a provider result when the approved story changes during synthesis and removes staged audio', async () => {
+    const repo = new InMemoryNarrationRepository(); const projectId = '00000000-0000-4000-8000-000000000001'; const storyboardId = '00000000-0000-4000-8000-000000000002';
+    repo.seedApprovedStoryboard({projectId, storyboardId, revision: 1, auditId: '00000000-0000-4000-8000-000000000003', narrationHash: 'approved-hash', scenes: [{id: '00000000-0000-4000-8000-000000000004', text: 'Approved words.'}]});
+    const storage = {writePrivateObject: vi.fn(async () => undefined), deleteMany: vi.fn(async () => undefined)};
+    const provider: NarrationProvider = {id: 'deepgram', model: 'aura-2-arcas-en', synthesize: vi.fn(async () => { repo.seedApprovedStoryboard({projectId, storyboardId, revision: 2, auditId: '00000000-0000-4000-8000-000000000013', narrationHash: 'changed-hash', scenes: [{id: '00000000-0000-4000-8000-000000000004', text: 'Changed words.'}]}); return {bytes: wav(), mimeType: 'audio/wav' as const, durationMs: 100}; })};
+    const fencingExecutor: ProviderExecutor = {execute: async (input) => { const result = await input.dispatch({runId: '00000000-0000-4000-8000-000000000099', providerIdempotencyKey: 'safe', signal: new AbortController().signal}); try { await input.persistResult({writeStructured: async (write) => write({} as never)}, {runId: '00000000-0000-4000-8000-000000000099', leaseToken: 'lease', consentId: 'consent', dispatchDeadlineAt: new Date()}, result.result); } catch (error) { await input.cleanupOrphanedResult?.(result.result); throw error; } return {runId: '00000000-0000-4000-8000-000000000099', cacheHit: false, result: result.result}; }};
+    const service = new NarrationService(repo, fencingExecutor, {deepgram: provider}, storage, async () => undefined, 'fingerprint-secret-at-least-32-characters');
+    await expect(service.sample(projectId, 'deepgram')).rejects.toThrow('NARRATION_APPROVAL_CHANGED_DURING_DISPATCH');
+    expect(storage.deleteMany).toHaveBeenCalledWith([`projects/${projectId}/narration/00000000-0000-4000-8000-000000000099/sample.wav`]);
+  });
 });

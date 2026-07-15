@@ -35,7 +35,7 @@ export class AuditService {
     const current = await this.repository.loadCreatorAudioSnapshot(projectId, assetId);
     const currentNarrationHash = sha256Canonical({text: current.narration[0]?.text ?? ''}); const currentEvidenceHash = sha256Canonical(current.evidence);
     if (this.expectedContract && (audit.auditPromptVersion !== this.expectedContract.auditPromptVersion || audit.auditSchemaVersion !== this.expectedContract.auditSchemaVersion || audit.model !== this.expectedContract.model)) throw new Error('AUDIT_CONTRACT_STALE');
-    if (audit.narrationHash !== narrationHash || audit.evidenceHash !== evidenceHash || audit.narrationHash !== currentNarrationHash || audit.evidenceHash !== currentEvidenceHash || audit.transcriptId !== current.transcriptId || audit.storyboardRevision !== current.storyboardRevision) throw new Error('AUDIT_HASH_MISMATCH');
+    if (audit.narrationHash !== narrationHash || audit.evidenceHash !== evidenceHash || audit.narrationHash !== currentNarrationHash || audit.evidenceHash !== currentEvidenceHash || audit.transcriptId !== current.transcriptId || audit.transcriptProviderRunId !== current.transcriptProviderRunId || audit.storyboardRevision !== current.storyboardRevision) throw new Error('AUDIT_HASH_MISMATCH');
     return this.repository.approveCreatorAudio(projectId, assetId, audit);
   }
 }

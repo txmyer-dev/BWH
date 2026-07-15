@@ -601,6 +601,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "creator_transcript_provider_run_id": {
+          "name": "creator_transcript_provider_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -710,6 +716,15 @@
           "columnsTo": [
             "id"
           ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "factuality_audits_creator_transcript_provider_run_id_provider_runs_id_fk": {
+          "name": "factuality_audits_creator_transcript_provider_run_id_provider_runs_id_fk",
+          "tableFrom": "factuality_audits",
+          "tableTo": "provider_runs",
+          "columnsFrom": ["creator_transcript_provider_run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }

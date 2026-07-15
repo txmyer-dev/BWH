@@ -1,8 +1,20 @@
 import {describe, expect, it, vi} from 'vitest';
 
-import {reconcileProviderRuns} from './route';
+import {removeProviderArtifact, reconcileProviderRuns} from './route';
 
 describe('provider reconciliation route', () => {
+  it('deletes retired private media from GCS without calling a provider API', async () => {
+    const gcs = {deleteMany: vi.fn().mockResolvedValue(undefined)};
+    const fetchImpl = vi.fn();
+
+    await removeProviderArtifact(
+      {provider: 'google_cloud_storage', providerArtifactId: 'projects/p/scenes/s.wav'},
+      {gcs, fetchImpl}
+    );
+
+    expect(gcs.deleteMany).toHaveBeenCalledWith(['projects/p/scenes/s.wav']);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
   it('rejects unverified callers before reconciliation', async () => {
     const reconcileExpired = vi.fn(); const reconcileArtifacts = vi.fn();
     const response = await reconcileProviderRuns(new Request('https://service.example/internal'), {verifier: {verifyIdToken: vi.fn()}, auth: {audience: 'https://service.example', serviceAccountEmail: 'tasks@example.com'}, reconcileExpired, reconcileArtifacts});

@@ -41,15 +41,27 @@ ALTER TABLE "assets" ADD COLUMN "creator_transcript_approval_hash" varchar(64);-
 ALTER TABLE "factuality_audits" ADD COLUMN "audit_scope" varchar(30) DEFAULT 'narration_text' NOT NULL;--> statement-breakpoint
 ALTER TABLE "factuality_audits" ADD COLUMN "creator_narration_asset_id" uuid;--> statement-breakpoint
 ALTER TABLE "factuality_audits" ADD COLUMN "creator_transcript_id" uuid;--> statement-breakpoint
+ALTER TABLE "factuality_audits" ADD COLUMN "creator_transcript_provider_run_id" uuid;--> statement-breakpoint
 ALTER TABLE "factuality_audits" ADD CONSTRAINT "factuality_audits_scope_check" CHECK ("factuality_audits"."audit_scope" IN ('narration_text','creator_audio'));--> statement-breakpoint
 ALTER TABLE "storyboards" ALTER COLUMN "narration_source" SET DEFAULT 'deepgram';--> statement-breakpoint
 UPDATE "storyboards" AS s
 SET "narration_source" = 'deepgram', "updated_at" = now()
 WHERE s."narration_source" = 'openai'
+  AND s."status" = 'draft'
+  AND s."revision" = 0
+  AND s."current_audit_id" IS NULL
+  AND s."narration_approved_at" IS NULL
+  AND s."narration_approval_audit_id" IS NULL
+  AND s."narration_approval_evidence_hash" IS NULL
+  AND s."narration_approval_hash" IS NULL
   AND s."audio_approved_at" IS NULL
   AND s."narration_track_selection" IS NULL
   AND s."creator_narration_asset_id" IS NULL
-  AND NOT EXISTS (SELECT 1 FROM "film_scenes" f WHERE f."storyboard_id" = s."id" AND f."generated_narration_object_key" IS NOT NULL);--> statement-breakpoint
+  AND s."narrator_voice" IS NULL
+  AND s."render_manifest" IS NULL
+  AND NOT EXISTS (SELECT 1 FROM "film_scenes" f WHERE f."storyboard_id" = s."id" AND f."generated_narration_object_key" IS NOT NULL)
+  AND NOT EXISTS (SELECT 1 FROM "narration_samples" ns WHERE ns."storyboard_id" = s."id")
+  AND NOT EXISTS (SELECT 1 FROM "narration_tracks" nt WHERE nt."storyboard_id" = s."id");--> statement-breakpoint
 ALTER TABLE "narration_samples" ADD CONSTRAINT "narration_samples_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "narration_samples" ADD CONSTRAINT "narration_samples_storyboard_id_storyboards_id_fk" FOREIGN KEY ("storyboard_id") REFERENCES "public"."storyboards"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "narration_samples" ADD CONSTRAINT "narration_samples_provider_run_id_provider_runs_id_fk" FOREIGN KEY ("provider_run_id") REFERENCES "public"."provider_runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -68,3 +80,5 @@ CREATE UNIQUE INDEX "narration_tracks_reuse_unique" ON "narration_tracks" USING 
 CREATE INDEX "narration_tracks_project_storyboard_idx" ON "narration_tracks" USING btree ("project_id","storyboard_id");--> statement-breakpoint
 ALTER TABLE "factuality_audits" ADD CONSTRAINT "factuality_audits_creator_narration_asset_id_assets_id_fk" FOREIGN KEY ("creator_narration_asset_id") REFERENCES "public"."assets"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "factuality_audits" ADD CONSTRAINT "factuality_audits_creator_transcript_id_asset_transcripts_id_fk" FOREIGN KEY ("creator_transcript_id") REFERENCES "public"."asset_transcripts"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "factuality_audits" ADD CONSTRAINT "factuality_audits_creator_transcript_provider_run_id_provider_runs_id_fk" FOREIGN KEY ("creator_transcript_provider_run_id") REFERENCES "public"."provider_runs"("id") ON DELETE cascade ON UPDATE no action;
