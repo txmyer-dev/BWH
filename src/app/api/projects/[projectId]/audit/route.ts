@@ -3,6 +3,7 @@ import {NextResponse} from 'next/server';
 
 import {PostgresAuditRepository} from '@/features/audit/audit-repository';
 import {AuditService} from '@/features/audit/audit-service';
+import {safeAuditRouteError} from '@/features/audit/audit-route-errors';
 import {PostgresConsentRepository} from '@/features/consent/consent-repository';
 import {ConsentService} from '@/features/consent/consent-service';
 import {PostgresProjectRepository} from '@/features/projects/project-repository';
@@ -12,7 +13,6 @@ import {parseEnv} from '@/server/env';
 import {createProviderServices} from '@/server/providers/factory';
 
 type RouteContext = {params: Promise<{projectId: string}>};
-const status = (code: string) => code.includes('FORBIDDEN') ? 403 : code.includes('NOT_FOUND') ? 404 : code.includes('CONSENT') ? 412 : code.includes('BUDGET') ? 429 : 400;
 
 export async function POST(_request: Request, context: RouteContext) {
   const {projectId} = await context.params;
@@ -25,5 +25,5 @@ export async function POST(_request: Request, context: RouteContext) {
     const auditor = createProviderServices(env, {database, auditRepository: repository}).factualityAuditor;
     if (!auditor) throw new Error('OPENAI_AUDIT_NOT_CONFIGURED');
     return NextResponse.json(await new AuditService(repository, auditor, (id) => projects.assertProjectOwner(id, token)).requestAudit(projectId));
-  } catch (error) { const code = error instanceof Error ? error.message : 'AUDIT_REQUEST_FAILED'; return NextResponse.json({error: code}, {status: status(code)}); }
+  } catch (error) { const safe = safeAuditRouteError(error, 'audit'); return NextResponse.json({error: safe.code}, {status: safe.status}); }
 }

@@ -32,4 +32,7 @@ export type FactualityAuditResult = {
   narrationHash: string;
   status: 'passed'|'blocked';
   findings: AuditFinding[];
+  auditPromptVersion: string;
+  auditSchemaVersion: string;
+  model: string;
 };

@@ -45,6 +45,9 @@ describe('storyboard revision migration history', () => {
     expect(migration).not.toMatch(/DROP\s|TRUNCATE\s|DELETE FROM/);
     expect(migration).toContain('CREATE TABLE "factuality_audits"');
     expect(migration).toContain('ALTER TABLE "storyboards" ADD COLUMN "narration_approval_hash"');
+    expect(migration).toContain('"audit_prompt_version" varchar(40) NOT NULL');
+    expect(migration).toContain('"audit_schema_version" varchar(40) NOT NULL');
+    expect(migration).toContain('"model" varchar(120) NOT NULL');
   });
 
   it('keeps fresh and upgraded processing-job index predicates in parity', () => {

@@ -1,5 +1,5 @@
 {
-  "id": "0bd2e042-a7ed-47b7-a804-57158be12e67",
+  "id": "959953eb-e5eb-4d0f-8c4d-18933543aa46",
   "prevId": "50831280-f0bb-40f2-b2dd-e01430636a25",
   "version": "7",
   "dialect": "postgresql",
@@ -549,6 +549,24 @@
         "findings": {
           "name": "findings",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_prompt_version": {
+          "name": "audit_prompt_version",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_schema_version": {
+          "name": "audit_schema_version",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "varchar(120)",
           "primaryKey": false,
           "notNull": true
         },

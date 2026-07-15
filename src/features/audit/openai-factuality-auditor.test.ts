@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from 'vitest';
 import type {ProviderExecutor} from '../providers/types';
 import {InMemoryProviderStructuredResultStore} from '../story/gemini-story-agent';
 import {InMemoryAuditRepository} from './audit-repository';
-import {OpenAIFactualityAuditor, openAIAuditPricing} from './openai-factuality-auditor';
+import {AUDIT_PROMPT_VERSION, AUDIT_SCHEMA_VERSION, OpenAIFactualityAuditor, openAIAuditPricing} from './openai-factuality-auditor';
 
 const projectId = crypto.randomUUID();
 const evidenceId = crypto.randomUUID();
@@ -34,7 +34,7 @@ describe('OpenAIFactualityAuditor', () => {
     expect(gate.execute).toHaveBeenCalledOnce();
     const execution = vi.mocked(gate.execute).mock.calls[0][0];
     expect(execution).toMatchObject({provider: 'openai', operation: 'audit_narration', dataCategories: ['approved_narration_text', 'source_references']});
-    expect(execution.canonicalInput).toEqual({storyboardId: input.storyboardId, storyboardRevision: 3, evidenceHash: input.evidenceHash, narrationHash: input.narrationHash});
+    expect(execution.canonicalInput).toEqual({storyboardId: input.storyboardId, storyboardRevision: 3, evidenceHash: input.evidenceHash, narrationHash: input.narrationHash, auditPromptVersion: AUDIT_PROMPT_VERSION, auditSchemaVersion: AUDIT_SCHEMA_VERSION, model: 'gpt-5.6'});
     const request = (fake.responses.parse.mock.calls as unknown as [[Record<string, unknown>]])[0][0];
     expect(request).toMatchObject({model: 'gpt-5.6', store: false});
     expect(request).not.toHaveProperty('previous_response_id');
@@ -95,13 +95,35 @@ describe('OpenAIFactualityAuditor', () => {
     await expect(new OpenAIFactualityAuditor(client(unsafe), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(input)).rejects.toThrow('OPENAI_AUDIT_INVALID_PROVENANCE');
 
     const store = new InMemoryProviderStructuredResultStore(); const runId = crypto.randomUUID();
-    await store.save({writeStructured: async (write) => write({} as never)}, projectId, runId, unsafe);
+    await store.save({writeStructured: async (write) => write({} as never)}, projectId, runId, {contract: {auditPromptVersion: AUDIT_PROMPT_VERSION, auditSchemaVersion: AUDIT_SCHEMA_VERSION, model: 'gpt-5.6'}, ...unsafe});
     const gate: ProviderExecutor = {execute: vi.fn(async (request) => ({runId, cacheHit: true, result: await request.loadResult(runId)}))};
     await expect(new OpenAIFactualityAuditor(client(), {model: 'gpt-5.6'}, gate, store, new InMemoryAuditRepository()).audit(input)).rejects.toThrow('OPENAI_AUDIT_INVALID_PROVENANCE');
   });
 
   it('cannot pass narration by omitting a supplied scene from the findings', async () => {
     await expect(new OpenAIFactualityAuditor(client({findings: []}), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(input)).rejects.toThrow('OPENAI_AUDIT_INCOMPLETE_COVERAGE');
+  });
+
+  it('allows uncited narration to reach OpenAI and persists a blocking missing-citation finding', async () => {
+    const uncited = {...input, narration: [{...input.narration[0], evidenceItemIds: []}]};
+    const output = {findings: [{sceneId, claim: uncited.narration[0].text, kind: 'missing_citation' as const, blocking: true, evidenceItemIds: [evidenceId]}]};
+    await expect(new OpenAIFactualityAuditor(client(output), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(uncited)).resolves.toMatchObject({status: 'blocked'});
+  });
+
+  it.each([
+    [{auditPromptVersion: 'old', auditSchemaVersion: AUDIT_SCHEMA_VERSION, model: 'gpt-5.6'}],
+    [{auditPromptVersion: AUDIT_PROMPT_VERSION, auditSchemaVersion: 'old', model: 'gpt-5.6'}],
+    [{auditPromptVersion: AUDIT_PROMPT_VERSION, auditSchemaVersion: AUDIT_SCHEMA_VERSION, model: 'gpt-5.6-terra'}]
+  ])('rejects cache reuse when contract identity does not match %#', async (contract) => {
+    const store = new InMemoryProviderStructuredResultStore(); const runId = crypto.randomUUID();
+    await store.save({writeStructured: async (write) => write({} as never)}, projectId, runId, {contract, findings: parsed.findings});
+    const gate: ProviderExecutor = {execute: vi.fn(async (request) => ({runId, cacheHit: true, result: await request.loadResult(runId)}))};
+    await expect(new OpenAIFactualityAuditor(client(), {model: 'gpt-5.6'}, gate, store, new InMemoryAuditRepository()).audit(input)).rejects.toThrow('OPENAI_AUDIT_CACHE_CONTRACT_MISMATCH');
+  });
+
+  it('persists cited unsupported wording only as a blocking finding', async () => {
+    const output = {findings: [{sceneId, claim: 'Mara owned every bakery in town.', kind: 'unsupported' as const, blocking: true, evidenceItemIds: [evidenceId]}]};
+    await expect(new OpenAIFactualityAuditor(client(output), {model: 'gpt-5.6'}, executor(), new InMemoryProviderStructuredResultStore(), new InMemoryAuditRepository()).audit(input)).resolves.toMatchObject({status: 'blocked', findings: [expect.objectContaining({kind: 'unsupported', blocking: true})]});
   });
 
   it('loads and revalidates a completed audit after process restart without a second OpenAI request', async () => {

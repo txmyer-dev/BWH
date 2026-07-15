@@ -8,6 +8,9 @@ CREATE TABLE "factuality_audits" (
 	"narration_hash" varchar(64) NOT NULL,
 	"status" varchar(20) NOT NULL,
 	"findings" jsonb NOT NULL,
+	"audit_prompt_version" varchar(40) NOT NULL,
+	"audit_schema_version" varchar(40) NOT NULL,
+	"model" varchar(120) NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "factuality_audits_status_check" CHECK ("factuality_audits"."status" IN ('passed','blocked'))
 );

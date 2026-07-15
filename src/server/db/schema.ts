@@ -323,6 +323,9 @@ export const factualityAudits = pgTable('factuality_audits', {
   narrationHash: varchar('narration_hash', {length: 64}).notNull(),
   status: varchar('status', {length: 20}).notNull(),
   findings: jsonb('findings').notNull(),
+  auditPromptVersion: varchar('audit_prompt_version', {length: 40}).notNull(),
+  auditSchemaVersion: varchar('audit_schema_version', {length: 40}).notNull(),
+  model: varchar('model', {length: 120}).notNull(),
   createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull()
 }, (table) => [
   check('factuality_audits_status_check', sql`${table.status} IN ('passed','blocked')`),
