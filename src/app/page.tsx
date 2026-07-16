@@ -19,9 +19,9 @@ export default function Home() {
           Shape scattered photographs and remembered stories into a quiet,
           beautifully paced film for the people who matter most.
         </p>
-        <a className="cta" href="#begin">
+        <Link className="cta" href="/projects/new">
           Begin a family film <span aria-hidden="true">→</span>
-        </a>
+        </Link>
       </section>
 
       <section className="process" id="begin" aria-label="How it works">
