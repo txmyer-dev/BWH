@@ -1,8 +1,22 @@
 import {describe, expect, it, vi} from 'vitest';
+import {PgDialect} from 'drizzle-orm/pg-core';
 
-import {InMemoryProviderArtifactRepository, prepareProviderArtifactsForProjectDeletion, ProviderArtifactService} from './provider-artifact-service';
+import {
+  InMemoryProviderArtifactRepository,
+  prepareProviderArtifactsForProjectDeletion,
+  providerArtifactClaimablePredicate,
+  ProviderArtifactService
+} from './provider-artifact-service';
 
 describe('provider artifact cleanup', () => {
+  it('encodes cleanup lease dates before postgres.js receives query parameters', () => {
+    const now = new Date('2026-07-16T12:34:56.789Z');
+    const query = new PgDialect().sqlToQuery(providerArtifactClaimablePredicate(now));
+    expect(query.params).not.toContainEqual(now);
+    expect(query.params.filter((value) => typeof value === 'string'))
+      .toContain(now.toISOString());
+  });
+
   it('persists an identifier before use and marks successful deletion', async () => {
     const repository = new InMemoryProviderArtifactRepository();
     const service = new ProviderArtifactService(repository);

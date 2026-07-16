@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {and, eq, inArray, lte, or, sql} from 'drizzle-orm';
+import {and, eq, inArray, lte, notInArray, or, sql, type SQL} from 'drizzle-orm';
 
 import type {Database} from '../../server/db/client';
 import {providerArtifacts} from '../../server/db/schema';
@@ -45,11 +45,19 @@ export class ProviderArtifactService {
 }
 
 const mapArtifact = (row: typeof providerArtifacts.$inferSelect): ProviderArtifact => ({...row, status: row.status as ProviderArtifactStatus});
+export const providerArtifactClaimablePredicate = (now: Date): SQL => and(
+  notInArray(providerArtifacts.status, ['deleted', 'expired_confirmed']),
+  or(
+    notInArray(providerArtifacts.status, ['cleanup_processing', 'deletion_processing']),
+    lte(providerArtifacts.cleanupLeaseExpiresAt, now)
+  )
+)!;
+
 export class PostgresProviderArtifactRepository implements ProviderArtifactRepository {
   constructor(private readonly database: Database) {}
   async create(input: NewArtifact) { const [row] = await this.database.insert(providerArtifacts).values({id: randomUUID(), ...input, providerRunId: input.providerRunId ?? null}).returning(); return mapArtifact(row); }
   async get(id: string) { const [row] = await this.database.select().from(providerArtifacts).where(eq(providerArtifacts.id, id)).limit(1); return row && mapArtifact(row); }
-  async claim(id: string, now: Date, leaseMs: number) { return this.database.transaction(async (transaction) => { const token = randomUUID(); const [row] = await transaction.update(providerArtifacts).set({status: sql`case when ${providerArtifacts.status} in ('deletion_pending','deletion_processing') then 'deletion_processing' else 'cleanup_processing' end`, cleanupClaimToken: token, cleanupLeaseExpiresAt: new Date(now.getTime() + leaseMs), updatedAt: now}).where(and(eq(providerArtifacts.id, id), sql`${providerArtifacts.status} not in ('deleted','expired_confirmed')`, sql`(${providerArtifacts.status} not in ('cleanup_processing','deletion_processing') or ${providerArtifacts.cleanupLeaseExpiresAt} <= ${now})`)).returning(); if (!row) throw new Error('PROVIDER_ARTIFACT_NOT_CLAIMABLE'); return {artifact: mapArtifact(row), claimToken: token}; }); }
+  async claim(id: string, now: Date, leaseMs: number) { return this.database.transaction(async (transaction) => { const token = randomUUID(); const [row] = await transaction.update(providerArtifacts).set({status: sql`case when ${providerArtifacts.status} in ('deletion_pending','deletion_processing') then 'deletion_processing' else 'cleanup_processing' end`, cleanupClaimToken: token, cleanupLeaseExpiresAt: new Date(now.getTime() + leaseMs), updatedAt: now}).where(and(eq(providerArtifacts.id, id), providerArtifactClaimablePredicate(now))).returning(); if (!row) throw new Error('PROVIDER_ARTIFACT_NOT_CLAIMABLE'); return {artifact: mapArtifact(row), claimToken: token}; }); }
   async claimDue(now: Date, leaseMs: number) { return this.database.transaction(async (transaction) => { const rows = await transaction.select().from(providerArtifacts).where(or(inArray(providerArtifacts.status, ['cleanup_pending','deletion_pending']), and(eq(providerArtifacts.status, 'active'), lte(providerArtifacts.expiresAt, now)), and(inArray(providerArtifacts.status, ['cleanup_processing','deletion_processing']), lte(providerArtifacts.cleanupLeaseExpiresAt, now)))).for('update', {skipLocked: true}); const claims: ProviderArtifactClaim[] = []; for (const row of rows) { const token = randomUUID(); const status = ['deletion_pending','deletion_processing'].includes(row.status) ? 'deletion_processing' : 'cleanup_processing'; const [updated] = await transaction.update(providerArtifacts).set({status, cleanupClaimToken: token, cleanupLeaseExpiresAt: new Date(now.getTime() + leaseMs), updatedAt: now}).where(eq(providerArtifacts.id, row.id)).returning(); claims.push({artifact: mapArtifact(updated), claimToken: token}); } return claims; }); }
   async markDeleted(claim: ProviderArtifactClaim) { const [row] = await this.database.update(providerArtifacts).set({status: 'deleted', cleanupAttempts: sql`${providerArtifacts.cleanupAttempts} + 1`, cleanupClaimToken: null, cleanupLeaseExpiresAt: null, lastCleanupError: null}).where(and(eq(providerArtifacts.id, claim.artifact.id), eq(providerArtifacts.cleanupClaimToken, claim.claimToken), inArray(providerArtifacts.status, ['cleanup_processing','deletion_processing']))).returning({id: providerArtifacts.id}); if (!row) throw new Error('PROVIDER_ARTIFACT_CLAIM_FENCED'); }
   async markFailure(claim: ProviderArtifactClaim, error: string) { const [row] = await this.database.update(providerArtifacts).set({status: sql`case when ${providerArtifacts.status} = 'deletion_processing' then 'deletion_pending' else 'cleanup_pending' end`, cleanupAttempts: sql`${providerArtifacts.cleanupAttempts} + 1`, cleanupClaimToken: null, cleanupLeaseExpiresAt: null, lastCleanupError: error.slice(0, 500)}).where(and(eq(providerArtifacts.id, claim.artifact.id), eq(providerArtifacts.cleanupClaimToken, claim.claimToken), inArray(providerArtifacts.status, ['cleanup_processing','deletion_processing']))).returning({id: providerArtifacts.id}); if (!row) throw new Error('PROVIDER_ARTIFACT_CLAIM_FENCED'); }

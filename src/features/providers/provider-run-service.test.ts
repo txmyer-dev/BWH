@@ -1,8 +1,13 @@
 import {describe, expect, it} from 'vitest';
+import {PgDialect} from 'drizzle-orm/pg-core';
 
 import type {Database} from '../../server/db/client';
 import {fingerprintInput} from './input-fingerprint';
-import {InMemoryProviderRunRepository, PostgresProviderRunRepository} from './provider-run-repository';
+import {
+  InMemoryProviderRunRepository,
+  PostgresProviderRunRepository,
+  providerRunLeasePredicates
+} from './provider-run-repository';
 import {providerRunSummary, ProviderRunService} from './provider-run-service';
 import {InMemoryTranscriptionRepository} from '../transcription/transcription-repository';
 
@@ -15,6 +20,23 @@ const input = {
 };
 
 describe('provider run state and budget control', () => {
+  it('encodes lease cutoff dates before postgres.js receives query parameters', () => {
+    const now = new Date('2026-07-16T12:34:56.789Z');
+    const dialect = new PgDialect();
+    const predicates = [
+      providerRunLeasePredicates.claimable(now),
+      providerRunLeasePredicates.active(now),
+      providerRunLeasePredicates.activeDispatch(now)
+    ];
+
+    for (const predicate of predicates) {
+      const query = dialect.sqlToQuery(predicate);
+      expect(query.params).not.toContainEqual(now);
+      expect(query.params.filter((value) => typeof value === 'string'))
+        .toContain(now.toISOString());
+    }
+  });
+
   it('uses project-scoped HMAC fingerprints', () => {
     expect(fingerprintInput('secret', projectId, {text: 'same'}))
       .not.toBe(fingerprintInput('secret', crypto.randomUUID(), {text: 'same'}));
