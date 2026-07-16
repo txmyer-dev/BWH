@@ -42,6 +42,61 @@ const parseDataUrl = (value: string) => {
   return {mimeType: match[1], base64: match[2], bytes: Buffer.from(match[2], 'base64')};
 };
 
+const normalizeProviderOutput = (operation: string, value: unknown) => {
+  if (
+    operation !== 'analyze_collection' ||
+    !value ||
+    typeof value !== 'object' ||
+    !Array.isArray((value as {evidenceCandidates?: unknown}).evidenceCandidates)
+  ) return value;
+  return {
+    ...value,
+    evidenceCandidates: (value as {evidenceCandidates: unknown[]}).evidenceCandidates.map((candidate) =>
+      candidate && typeof candidate === 'object'
+        ? {...candidate, proposedStatus: 'proposed'}
+        : candidate
+    )
+  };
+};
+
+export const providerResponseSchema = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(providerResponseSchema);
+  if (!value || typeof value !== 'object') return value;
+  const source = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  if ('const' in source) result.enum = [source.const];
+  for (const key of ['type', 'required', 'enum', 'nullable', 'description'] as const) {
+    if (key in source) result[key] = providerResponseSchema(source[key]);
+  }
+  if (source.properties && typeof source.properties === 'object') {
+    result.properties = Object.fromEntries(
+      Object.entries(source.properties as Record<string, unknown>)
+        .map(([key, schema]) => [key, providerResponseSchema(schema)])
+    );
+  }
+  if ('items' in source) result.items = providerResponseSchema(source.items);
+  if ('anyOf' in source) result.anyOf = providerResponseSchema(source.anyOf);
+  return result;
+};
+
+const fitStoryboardDuration = (storyboard: StoryboardDraft): StoryboardDraft => {
+  const total = storyboard.scenes.reduce((sum, scene) => sum + scene.durationSeconds, 0);
+  if (total >= 120 && total <= 240) return storyboard;
+  const target = total < 120 ? 120 : 240;
+  const scale = target / total;
+  let allocated = 0;
+  return {
+    ...storyboard,
+    scenes: storyboard.scenes.map((scene, index) => {
+      const durationSeconds = index === storyboard.scenes.length - 1
+        ? target - allocated
+        : Math.round(scene.durationSeconds * scale * 1_000) / 1_000;
+      allocated += durationSeconds;
+      return {...scene, durationSeconds};
+    })
+  };
+};
+
 // Google Gemini API paid Standard pricing, verified 2026-07-14:
 // https://ai.google.dev/gemini-api/docs/pricing
 const GEMINI_PRICING = {
@@ -161,9 +216,7 @@ export class GeminiStoryAgent implements StoryAgent, StoryGuideAgent {
   composeStoryboard(input: Parameters<StoryGuideAgent['composeStoryboard']>[0]): Promise<StoryboardDraft> {
     return this.guide(input.projectId, 'compose_storyboard', `Compose a grounded storyboard.\nUNTRUSTED_APPROVED_EVIDENCE_JSON\n${JSON.stringify(input.approvedEvidence)}`, storyboardDraftSchema, input, async (value) => {
       await this.validateGuideEvidence(input.projectId, value, input.approvedEvidence);
-      const duration = value.scenes.reduce((sum, scene) => sum + scene.durationSeconds, 0);
-      if (duration < 120 || duration > 240) throw new Error('STORYBOARD_DURATION_OUT_OF_RANGE');
-      return value;
+      return fitStoryboardDuration(value);
     });
   }
 
@@ -199,9 +252,9 @@ export class GeminiStoryAgent implements StoryAgent, StoryGuideAgent {
       dispatch: async ({signal, runId}) => {
         const built = await input.buildParts(signal, runId);
         try {
-          const response = await this.client.models.generateContent({model: this.config.model, contents: [{role: 'user', parts: built.parts}], config: {systemInstruction: input.instructions, responseMimeType: 'application/json', responseJsonSchema: z.toJSONSchema(input.schema), abortSignal: signal}});
+          const response = await this.client.models.generateContent({model: this.config.model, contents: [{role: 'user', parts: built.parts}], config: {systemInstruction: input.instructions, responseMimeType: 'application/json', responseJsonSchema: providerResponseSchema(z.toJSONSchema(input.schema)), abortSignal: signal}});
           if (!response.text) throw new Error('INVALID_MODEL_OUTPUT');
-          const result = await input.validate(input.schema.parse(JSON.parse(response.text)));
+          const result = await input.validate(input.schema.parse(normalizeProviderOutput(input.operation, JSON.parse(response.text))));
           const promptTokens = response.usageMetadata?.promptTokenCount;
           const outputTokens = response.usageMetadata?.candidatesTokenCount;
           const thinkingTokens = response.usageMetadata?.thoughtsTokenCount ?? 0;

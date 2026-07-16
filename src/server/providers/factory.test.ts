@@ -4,7 +4,7 @@ import {createProviderServices} from './factory';
 import {InMemoryProviderStructuredResultStore} from '../../features/story/gemini-story-agent';
 import {InMemoryAuditRepository} from '../../features/audit/audit-repository';
 
-const env = {NODE_ENV: 'production' as const, GEMINI_API_KEY: 'secret', GEMINI_STORY_MODEL: 'gemini-3.1-flash-lite', GEMINI_REQUIRE_PAID_PROJECT: true, GEMINI_PAID_PROJECT_VERIFIED: true, GEMINI_PAID_PROJECT_ID: 'project-a', GCP_PROJECT_ID: 'project-a', DEEPGRAM_TRANSCRIPTION_MODEL: 'nova-3'};
+const env = {NODE_ENV: 'production' as const, GEMINI_API_KEY: 'secret', GEMINI_STORY_MODEL: 'gemini-3.1-flash-lite', GEMINI_USE_VERTEX_AI: false, GEMINI_VERTEX_LOCATION: 'global', GEMINI_REQUIRE_PAID_PROJECT: true, GEMINI_PAID_PROJECT_VERIFIED: true, GEMINI_PAID_PROJECT_ID: 'project-a', GCP_PROJECT_ID: 'project-a', DEEPGRAM_TRANSCRIPTION_MODEL: 'nova-3', FACTUALITY_AUDIT_PROVIDER: 'openai' as const};
 const deps = {executor: {execute: vi.fn()}, resultStore: new InMemoryProviderStructuredResultStore(), createGeminiClient: vi.fn(() => ({models: {}, files: {}}))};
 
 describe('createProviderServices', () => {
@@ -19,13 +19,27 @@ describe('createProviderServices', () => {
   it('constructs the live client only after attestation passes', () => {
     const services = createProviderServices(env, deps as never);
     expect(services.storyAgent).toBeTruthy();
-    expect(deps.createGeminiClient).toHaveBeenCalledWith('secret');
+    expect(deps.createGeminiClient).toHaveBeenCalledWith({apiKey: 'secret', vertexai: false});
+  });
+
+  it('uses workload identity for Vertex AI without requiring a Gemini API key', () => {
+    const createGeminiClient = vi.fn(() => ({models: {}, files: {}}));
+    const services = createProviderServices(
+      {...env, GEMINI_API_KEY: undefined, GEMINI_USE_VERTEX_AI: true},
+      {...deps, createGeminiClient} as never
+    );
+    expect(services.storyAgent).toBeTruthy();
+    expect(createGeminiClient).toHaveBeenCalledWith({
+      vertexai: true,
+      project: 'project-a',
+      location: 'global'
+    });
   });
 
   it('allows an injected fake only outside production without an API key', () => {
     const fake = vi.fn(() => ({models: {}, files: {}}));
     expect(createProviderServices({...env, NODE_ENV: 'test', GEMINI_API_KEY: undefined}, {...deps, createGeminiClient: fake} as never).storyAgent).toBeTruthy();
-    expect(fake).toHaveBeenCalledWith(undefined);
+    expect(fake).toHaveBeenCalledWith({apiKey: undefined, vertexai: false});
   });
 
   it('rejects default live construction outside production without paid-project attestation', () => {
@@ -58,6 +72,18 @@ describe('createProviderServices', () => {
     const services = createProviderServices({...env, NODE_ENV: 'test'}, {...deps, createOpenAIClient, auditRepository: new InMemoryAuditRepository()} as never);
     expect(services.factualityAuditor).toBeTruthy();
     expect(createOpenAIClient).toHaveBeenCalledWith(undefined);
+  });
+
+  it('uses the existing Gemini client for factuality review when selected', () => {
+    const createOpenAIClient = vi.fn(() => ({responses: {parse: vi.fn()}}));
+    const services = createProviderServices(
+      {...env, FACTUALITY_AUDIT_PROVIDER: 'gemini', OPENAI_API_KEY: undefined},
+      {...deps, createOpenAIClient, auditRepository: new InMemoryAuditRepository()} as never
+    );
+    expect(services.factualityAuditor).toBeTruthy();
+    expect(createOpenAIClient).not.toHaveBeenCalled();
+    expect(services.factualityAuditModel).toBe('gemini-3.1-flash-lite');
+    expect(services.factualityAuditConsentProvider).toBe('google_gemini');
   });
 
   it('fails closed for an unpriced configured OpenAI audit model', () => {

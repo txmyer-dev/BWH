@@ -18,14 +18,22 @@ export interface NarrationProvider {
   synthesize(input: NarrationSynthesisInput): Promise<NarrationSynthesis>;
 }
 
+const DEEPGRAM_STREAMING_RIFF_SIZE = 0x7fff0024;
+const DEEPGRAM_STREAMING_DATA_SIZE = 0x7fff0000;
+
 export const inspectPcmWav = (bytes: Uint8Array, maximumBytes = 25 * 1024 * 1024, maximumDurationMs = 10 * 60_000) => {
   if (bytes.byteLength < 44 || bytes.byteLength > maximumBytes) throw new Error('NARRATION_AUDIO_INVALID');
   const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.toString('ascii', 0, 4) !== 'RIFF' || view.toString('ascii', 8, 12) !== 'WAVE') throw new Error('NARRATION_AUDIO_INVALID');
-  if (view.readUInt32LE(4) !== view.length - 8) throw new Error('NARRATION_AUDIO_INVALID');
+  const declaredRiffSize = view.readUInt32LE(4);
+  const deepgramStreaming = declaredRiffSize === DEEPGRAM_STREAMING_RIFF_SIZE;
+  if (declaredRiffSize !== view.length - 8 && !deepgramStreaming) throw new Error('NARRATION_AUDIO_INVALID');
   let offset = 12; let format: {audioFormat: number; channels: number; sampleRate: number; byteRate: number; blockAlign: number; bits: number}|undefined; let dataBytes: number|undefined;
   while (offset + 8 <= view.length) {
-    const id = view.toString('ascii', offset, offset + 4); const size = view.readUInt32LE(offset + 4); const start = offset + 8;
+    const id = view.toString('ascii', offset, offset + 4); const declaredSize = view.readUInt32LE(offset + 4); const start = offset + 8;
+    const size = id === 'data' && deepgramStreaming && declaredSize === DEEPGRAM_STREAMING_DATA_SIZE
+      ? view.length - start
+      : declaredSize;
     const paddedEnd = start + size + (size & 1); if (start + size > view.length || paddedEnd > view.length) throw new Error('NARRATION_AUDIO_INVALID');
     if (id === 'fmt ') { if (format || size !== 16) throw new Error('NARRATION_AUDIO_INVALID'); format = {audioFormat: view.readUInt16LE(start), channels: view.readUInt16LE(start + 2), sampleRate: view.readUInt32LE(start + 4), byteRate: view.readUInt32LE(start + 8), blockAlign: view.readUInt16LE(start + 12), bits: view.readUInt16LE(start + 14)}; }
     if (id === 'data') { if (dataBytes !== undefined) throw new Error('NARRATION_AUDIO_INVALID'); dataBytes = size; }

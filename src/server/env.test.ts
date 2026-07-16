@@ -13,7 +13,12 @@ describe('parseEnv', () => {
   it('applies deployment defaults', () => {
     expect(parseEnv(requiredEnv)).toMatchObject({
       GCP_LOCATION: 'us-central1',
+      FACTUALITY_AUDIT_PROVIDER: 'openai',
+      GEMINI_USE_VERTEX_AI: false,
+      GEMINI_VERTEX_LOCATION: 'global',
       RENDER_JOB_NAME: 'legacy-studio-render',
+      REMOTION_BUNDLE_PATH: 'remotion-bundle',
+      REMOTION_CONCURRENCY: 4,
       PROVIDER_RUN_LEASE_MS: 60_000,
       PROVIDER_DEFAULT_BUDGET_MICROS: 5_000_000,
       PROVIDER_DEFAULT_REQUEST_BUDGET: 100

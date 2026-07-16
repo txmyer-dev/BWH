@@ -3,6 +3,7 @@
 .next/
 node_modules/
 tsconfig.tsbuildinfo
+remotion-bundle/
 .env
 .env.*
 !.env.example

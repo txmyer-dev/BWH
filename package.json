@@ -6,7 +6,8 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && npm run film:bundle",
+    "film:bundle": "node scripts/build-remotion.mjs",
     "start": "next start",
     "lint": "eslint .",
     "test": "vitest run",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
+    "@remotion/bundler": "^4.0.489",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

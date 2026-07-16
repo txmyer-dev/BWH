@@ -16,6 +16,7 @@ import type {Database} from '../db/client';
 import {DeepgramTranscriber, type DeepgramClient, type DeepgramResponse} from '../../features/transcription/deepgram-transcriber';
 import {deepgramTranscriptionPricing} from '../../features/transcription/transcription-service';
 import {OpenAIFactualityAuditor, openAIAuditPricing, type OpenAIAuditClient} from '../../features/audit/openai-factuality-auditor';
+import {GeminiFactualityAuditor} from '../../features/audit/gemini-factuality-auditor';
 import {PostgresAuditRepository, type AuditRepository} from '../../features/audit/audit-repository';
 import {DeepgramNarration} from '../../features/narration/deepgram-narration';
 import {AzureNarration, type AzureSpeechClient} from '../../features/narration/azure-narration';
@@ -25,6 +26,8 @@ type ProviderEnvironment = {
   GCP_PROJECT_ID: string;
   GEMINI_API_KEY?: string;
   GEMINI_STORY_MODEL: string;
+  GEMINI_USE_VERTEX_AI: boolean;
+  GEMINI_VERTEX_LOCATION: string;
   GEMINI_REQUIRE_PAID_PROJECT: boolean;
   GEMINI_PAID_PROJECT_VERIFIED: boolean;
   GEMINI_PAID_PROJECT_ID?: string;
@@ -37,6 +40,7 @@ type ProviderEnvironment = {
   AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS?: number;
   OPENAI_API_KEY?: string;
   OPENAI_AUDIT_MODEL?: string;
+  FACTUALITY_AUDIT_PROVIDER: 'openai'|'gemini';
   PROVIDER_FINGERPRINT_SECRET?: string;
   PROVIDER_DEFAULT_BUDGET_MICROS?: number;
   PROVIDER_DEFAULT_REQUEST_BUDGET?: number;
@@ -47,7 +51,7 @@ type ProviderDependencies = {
   executor?: ProviderExecutor;
   database?: Database;
   resultStore?: ProviderStructuredResultStore;
-  createGeminiClient?: (apiKey: string | undefined) => GeminiClient;
+  createGeminiClient?: (options: {apiKey?: string; vertexai: boolean; project?: string; location?: string}) => GeminiClient;
   createDeepgramClient?: (apiKey: string) => DeepgramClient;
   createOpenAIClient?: (apiKey: string | undefined) => OpenAIAuditClient;
   auditRepository?: AuditRepository;
@@ -60,12 +64,15 @@ export const createProviderServices = (env: ProviderEnvironment, dependencies: P
     env.GEMINI_PAID_PROJECT_VERIFIED === true &&
     Boolean(env.GEMINI_PAID_PROJECT_ID) && env.GEMINI_PAID_PROJECT_ID === env.GCP_PROJECT_ID;
   const injectedFake = Boolean(dependencies.createGeminiClient) && env.NODE_ENV !== 'production';
-  if (!injectedFake && (!attested || !env.GEMINI_API_KEY)) throw new Error('GEMINI_PAID_PROJECT_NOT_VERIFIED');
-  const createClient = dependencies.createGeminiClient ?? ((apiKey) => {
-    if (!apiKey) throw new Error('GEMINI_API_KEY_REQUIRED');
-    return new GoogleGenAI({apiKey}) as unknown as GeminiClient;
+  if (!injectedFake && (!attested || (!env.GEMINI_USE_VERTEX_AI && !env.GEMINI_API_KEY))) throw new Error('GEMINI_PAID_PROJECT_NOT_VERIFIED');
+  const clientOptions = env.GEMINI_USE_VERTEX_AI
+    ? {vertexai: true, project: env.GCP_PROJECT_ID, location: env.GEMINI_VERTEX_LOCATION}
+    : {vertexai: false, apiKey: env.GEMINI_API_KEY};
+  const createClient = dependencies.createGeminiClient ?? ((options) => {
+    if (!options.vertexai && !options.apiKey) throw new Error('GEMINI_API_KEY_REQUIRED');
+    return new GoogleGenAI(options) as unknown as GeminiClient;
   });
-  const client = createClient(env.GEMINI_API_KEY);
+  const client = createClient(clientOptions);
   const executor = dependencies.executor ?? (() => {
     if (!dependencies.database) throw new Error('PROVIDER_DATABASE_REQUIRED');
     const consent = new ConsentService(new PostgresConsentRepository(dependencies.database), async () => undefined);
@@ -89,8 +96,10 @@ export const createProviderServices = (env: ProviderEnvironment, dependencies: P
   }))(env.DEEPGRAM_API_KEY) : undefined;
   if (deepgramClient) deepgramTranscriptionPricing(env.DEEPGRAM_TRANSCRIPTION_MODEL!);
   const openAIModel = env.OPENAI_AUDIT_MODEL ?? 'gpt-5.6';
+  const factualityAuditModel = env.FACTUALITY_AUDIT_PROVIDER === 'gemini' ? env.GEMINI_STORY_MODEL : openAIModel;
+  const factualityAuditConsentProvider = env.FACTUALITY_AUDIT_PROVIDER === 'gemini' ? 'google_gemini' : 'openai';
   const injectedOpenAI = Boolean(dependencies.createOpenAIClient) && env.NODE_ENV !== 'production';
-  const openAIClient = env.OPENAI_API_KEY || injectedOpenAI ? (dependencies.createOpenAIClient ?? ((key) => {
+  const openAIClient = env.FACTUALITY_AUDIT_PROVIDER === 'openai' && (env.OPENAI_API_KEY || injectedOpenAI) ? (dependencies.createOpenAIClient ?? ((key) => {
     if (!key) throw new Error('OPENAI_API_KEY_REQUIRED');
     return new OpenAI({apiKey: key, maxRetries: 0}) as unknown as OpenAIAuditClient;
   }))(env.OPENAI_API_KEY) : undefined;
@@ -112,11 +121,20 @@ export const createProviderServices = (env: ProviderEnvironment, dependencies: P
       stop: () => { active?.close(); active = undefined; }
     };
   }))(env.AZURE_SPEECH_KEY!, env.AZURE_SPEECH_REGION!, env.AZURE_SPEECH_VOICE!) : undefined;
+  const factualityAuditor = auditRepository
+    ? env.FACTUALITY_AUDIT_PROVIDER === 'gemini'
+      ? new GeminiFactualityAuditor(client, {model: factualityAuditModel}, executor, results, auditRepository)
+      : openAIClient
+        ? new OpenAIFactualityAuditor(openAIClient, {model: factualityAuditModel}, executor, results, auditRepository)
+        : undefined
+    : undefined;
   return {
     executor,
     storyAgent: new GeminiStoryAgent(client, {model: env.GEMINI_STORY_MODEL}, executor, results, artifacts, listReadyAssetIds),
     deepgramTranscriber: deepgramClient ? new DeepgramTranscriber(deepgramClient, {model: env.DEEPGRAM_TRANSCRIPTION_MODEL!}) : undefined,
-    factualityAuditor: openAIClient && auditRepository ? new OpenAIFactualityAuditor(openAIClient, {model: openAIModel}, executor, results, auditRepository) : undefined,
+    factualityAuditor,
+    factualityAuditModel,
+    factualityAuditConsentProvider,
     narrationProviders: {deepgram: deepgramNarration, azure: azureClient ? new AzureNarration(azureClient, {voice: env.AZURE_SPEECH_VOICE!}) : undefined},
     azureTtsPriceMicrosPerMillionCharacters: env.AZURE_TTS_PRICE_MICROS_PER_MILLION_CHARS
   };

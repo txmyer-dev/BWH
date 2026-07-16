@@ -201,6 +201,23 @@ button {
   padding: 0.6rem 0.9rem;
 }
 
+.film-gift {
+  border-color: rgb(170 138 78 / 65%);
+  background: linear-gradient(135deg, rgb(255 255 255 / 52%), rgb(231 216 184 / 42%));
+}
+
+.film-download {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: Arial, Helvetica, sans-serif;
+  text-decoration: none;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,

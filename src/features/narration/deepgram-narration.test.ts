@@ -12,6 +12,14 @@ const wav = () => {
 };
 
 describe('DeepgramNarration', () => {
+  it('accepts Deepgram streaming WAV length sentinels and measures the received PCM bytes', async () => {
+    const bytes = wav();
+    bytes.writeUInt32LE(0x7fff0024, 4);
+    bytes.writeUInt32LE(0x7fff0000, 40);
+    const provider = new DeepgramNarration('secret', {request: vi.fn(async () => new Response(bytes, {status: 200}))});
+    await expect(provider.synthesize({text: 'Approved.', voice: 'aura-2-arcas-en', requestId: 'safe'})).resolves.toMatchObject({durationMs: 1000});
+  });
+
   it.each([
     ['bad RIFF length', (bytes: Buffer) => { bytes.writeUInt32LE(bytes.length, 4); }],
     ['bad block alignment', (bytes: Buffer) => { bytes.writeUInt16LE(4, 32); }],

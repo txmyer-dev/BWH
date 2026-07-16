@@ -18,6 +18,7 @@ import {processingConsentDataCategories} from '@/features/consent/processing-dis
 import {durationSecondsToMs} from '@/features/media/audio-duration';
 import type {Question, Storyboard} from '@/features/story/story-service';
 import type {FactualityAuditResult} from '@/features/audit/schemas';
+import {beginFilmPreparation, completeFilmPreparation, initialFilmUiState} from '@/features/film/film-ui-state';
 import {canStartApproval, canUseAuditAction, shouldAcceptApprovalResponse, shouldAcceptAuditResponse} from '@/features/audit/audit-ui-state';
 import {
   displayEvidenceClaim,
@@ -100,6 +101,7 @@ export default function ProjectPage({
   const [creatorNarration, setCreatorNarration] = useState<File|null>(null);
   const [creatorNarrationAssetId, setCreatorNarrationAssetId] = useState<string|null>(null);
   const [creatorAudioAudit, setCreatorAudioAudit] = useState<FactualityAuditResult|null>(null);
+  const [filmUi, setFilmUi] = useState(initialFilmUiState);
   const auditEditGeneration = useRef(0);
   const displayedAuditId = useRef<string|null>(null);
   const approvalPendingRef = useRef(false);
@@ -126,7 +128,7 @@ export default function ProjectPage({
     }).catch(() => undefined);
   }, [projectId]);
 
-  const clearDisplayedAudit = () => { displayedAuditId.current = null; setAudit(null); };
+  const clearDisplayedAudit = () => { displayedAuditId.current = null; setAudit(null); setFilmUi(initialFilmUiState); };
 
   const chooseImages = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []).slice(0, 7);
@@ -416,6 +418,22 @@ export default function ProjectPage({
   };
   const reviewCreatorNarration = async () => { if (!creatorNarrationAssetId) return; const response = await fetch(`/api/projects/${projectId}/narration/creator-audio/audit`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({assetId: creatorNarrationAssetId})}); if (!response.ok) return setMessage('The exact transcript is not ready or needs another review.'); const result = await response.json() as FactualityAuditResult; setCreatorAudioAudit(result); setMessage(result.status === 'passed' ? 'Your creator recording passed the story check.' : 'The creator recording includes wording that needs review.'); };
   const chooseCreatorNarration = async () => { if (!creatorNarrationAssetId || !creatorAudioAudit || creatorAudioAudit.status !== 'passed') return; const approved = await fetch(`/api/projects/${projectId}/narration/creator-audio/approve`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({assetId: creatorNarrationAssetId, auditId: creatorAudioAudit.auditId, narrationHash: creatorAudioAudit.narrationHash, evidenceHash: creatorAudioAudit.evidenceHash})}); if (!approved.ok) return setMessage('The transcript changed. Run a fresh story check.'); const selected = await fetch(`/api/projects/${projectId}/narration/selection`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kind: 'creator', assetId: creatorNarrationAssetId})}); setMessage(selected.ok ? 'Your creator-provided recording is selected for the film.' : 'That recording could not be selected.'); };
+  const prepareFilm = async () => {
+    setFilmUi((current) => beginFilmPreparation(current));
+    setMessage('Preparing your private Memory Film. This can take a few minutes.');
+    try {
+      const rendered = await fetch(`/api/projects/${projectId}/render`, {method: 'POST'});
+      if (!rendered.ok) throw new Error('RENDER_FAILED');
+      const download = await fetch(`/api/projects/${projectId}/download`);
+      if (!download.ok) throw new Error('DOWNLOAD_FAILED');
+      const result = await download.json() as {url: string};
+      setFilmUi(completeFilmPreparation(result.url));
+      setMessage('Your Memory Film is ready to give.');
+    } catch {
+      setFilmUi(initialFilmUiState);
+      setMessage('The film could not be prepared yet. Your story and media are safe; check the final approvals and try again.');
+    }
+  };
 
   const saveScene = async (sceneId: string) => {
     if (!storyboard) return;
@@ -569,7 +587,7 @@ export default function ProjectPage({
           <h2 id="storage-consent-title">Keep your family pieces private</h2>
           <p>
             Private originals and derivatives are stored in Google Cloud Storage.
-            This is storage only; it is separate from the Gemini Developer API.
+            This is storage only; it is separate from Gemini story processing.
           </p>
           <p>
             Data stored: original photographs, recordings, written artifacts, and
@@ -590,9 +608,9 @@ export default function ProjectPage({
             continuing, you confirm that you have permission to submit this material.
           </p>
           <ul>
-            <li><strong>Google Gemini Developer API:</strong> selected photos, captions, written artifacts, transcripts, and approved story context for analysis and story composition. Gemini has no regional data-residency promise. <a href="https://ai.google.dev/gemini-api/terms" target="_blank" rel="noreferrer">Privacy and terms</a></li>
+            <li><strong>Google Gemini through Vertex AI:</strong> selected photos, captions, written artifacts, transcripts, and approved story context for analysis and story composition; this deployment also sends approved narration and source references for factuality review. It uses Google Cloud workload identity and the global Vertex AI endpoint. <a href="https://cloud.google.com/vertex-ai/generative-ai/docs/data-governance" target="_blank" rel="noreferrer">Data governance</a></li>
             <li><strong>Deepgram:</strong> source recordings or creator-provided narration for transcription; approved narration text and the Arcas voice setting for narration. <a href="https://deepgram.com/privacy" target="_blank" rel="noreferrer">Privacy information</a></li>
-            <li><strong>OpenAI:</strong> only the approved evidence ledger, source references, and final narration text for factuality review. <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noreferrer">Privacy information</a></li>
+            <li><strong>OpenAI (alternate deployment option):</strong> only the approved evidence ledger, source references, and final narration text when a deployment selects OpenAI for factuality review. The current deployment uses Google Gemini for this step. <a href="https://openai.com/policies/privacy-policy/" target="_blank" rel="noreferrer">Privacy information</a></li>
             <li><strong>Microsoft Azure (optional, not currently selected):</strong> only approved narration text and voice settings after you explicitly select Azure. <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noreferrer">Privacy information</a></li>
           </ul>
           <label>
@@ -821,6 +839,13 @@ export default function ProjectPage({
             <button type="button" disabled={!narrationSampleApproved} onClick={createNarration}>Create the film narration</button>
             <p><small>{narrationProvider === 'deepgram' ? 'Narration created with a generated voice from Deepgram.' : 'Narration created with a generated voice from Microsoft Azure.'} Creator recordings are always labeled creator-provided.</small></p>
             <details><summary>Use my own recording instead</summary><p>Your recording is transcribed with Deepgram Nova-3, then its exact transcript is checked against the approved family record by OpenAI before it can be selected.</p><input type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg" onChange={(event) => { setCreatorNarration(event.target.files?.[0] ?? null); setCreatorNarrationAssetId(null); setCreatorAudioAudit(null); }} /><button type="button" disabled={!creatorNarration} onClick={preserveCreatorNarration}>Preserve and transcribe my recording</button><button type="button" disabled={!creatorNarrationAssetId} onClick={reviewCreatorNarration}>Review its exact transcript against the record</button><button type="button" disabled={creatorAudioAudit?.status !== 'passed'} onClick={chooseCreatorNarration}>Use this creator-provided recording</button></details>
+          </section>
+          <section className="record-card film-gift" aria-labelledby="film-gift-title">
+            <h4 id="film-gift-title">Prepare the gift</h4>
+            <p>Turn the approved story, photographs, recordings, and narration into one private downloadable film.</p>
+            <button type="button" disabled={filmUi.status === 'preparing'} onClick={prepareFilm}>{filmUi.status === 'preparing' ? 'Preparing your film…' : 'Prepare the gift'}</button>
+            {filmUi.status === 'ready' && filmUi.downloadUrl && <a className="film-download" href={filmUi.downloadUrl}>Download MP4</a>}
+            <p><small>The download link is private and expires after fifteen minutes. You can prepare it again if needed.</small></p>
           </section>
         </section>}
       </section>

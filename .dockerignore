@@ -4,6 +4,7 @@
 node_modules
 npm-debug.log*
 tsconfig.tsbuildinfo
+remotion-bundle
 .env
 .env.*
 !.env.example
