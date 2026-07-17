@@ -3,7 +3,7 @@ import {and, asc, eq, inArray, sql} from 'drizzle-orm';
 import {z} from 'zod';
 
 import type {Database} from '../../server/db/client';
-import {assets, evidenceItems, filmScenes, interviewAnswers, interviewQuestions, narrationSamples, narrationTracks, projects, providerArtifacts, storyboards, voiceProfiles} from '../../server/db/schema';
+import {assets, evidenceItems, filmScenes, interviewAnswers, interviewQuestions, narrationSamples, narrationTracks, processingJobs, projects, providerArtifacts, storyboards, voiceProfiles} from '../../server/db/schema';
 import {lockNarrationProject} from '../narration/narration-lock';
 import type {ProviderDatabaseTransaction} from '../providers/types';
 import type {EvidenceItem} from '../evidence/schemas';
@@ -60,6 +60,7 @@ export const invalidateDownstreamStoryState = async (transaction: ProviderDataba
     await transaction.update(storyboards).set({currentAuditId: null, narrationApprovedAt: null, narrationApprovalAuditId: null, narrationApprovalEvidenceHash: null, narrationApprovalHash: null, audioApprovedAt: null, narrationTrackSelection: null, renderManifest: null, ...(bumpRevision ? {revision: sql`${storyboards.revision} + 1`} : {}), updatedAt: new Date()}).where(eq(storyboards.id, board.id));
   }
   await transaction.update(assets).set({creatorTranscriptAuditId: null, creatorTranscriptApprovalHash: null, updatedAt: new Date()}).where(and(eq(assets.projectId, projectId), eq(assets.assetKind, 'creator_narration')));
+  await transaction.update(processingJobs).set({status: 'superseded', leaseToken: null, leaseExpiresAt: null, lastError: 'RENDER_SUPERSEDED', updatedAt: new Date()}).where(and(eq(processingJobs.projectId, projectId), eq(processingJobs.jobType, 'render_film'), inArray(processingJobs.status, ['pending', 'processing', 'completed'])));
   await transaction.update(projects).set({renderedFilmObjectKey: null, renderedAt: null, updatedAt: new Date()}).where(eq(projects.id, projectId));
 };
 type StoryboardCreate = Omit<Storyboard, 'id' | 'projectId' | 'revision' | 'scenes'> & {scenes: FilmSceneInput[]};

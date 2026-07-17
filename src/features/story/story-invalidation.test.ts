@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, it, vi} from 'vitest';
 
-import {assets, filmScenes, narrationTracks, projects, providerArtifacts, storyboards} from '../../server/db/schema';
+import {assets, filmScenes, narrationTracks, processingJobs, projects, providerArtifacts, storyboards} from '../../server/db/schema';
 import {invalidateDownstreamStoryState} from './story-service';
 
 describe('story downstream invalidation', () => {
@@ -22,6 +22,7 @@ describe('story downstream invalidation', () => {
     expect(sets.get(filmScenes)).toMatchObject({generatedNarrationObjectKey: null});
     expect(sets.get(assets)).toMatchObject({creatorTranscriptAuditId: null, creatorTranscriptApprovalHash: null});
     expect(sets.get(projects)).toMatchObject({renderedFilmObjectKey: null, renderedAt: null});
+    expect(sets.get(processingJobs)).toMatchObject({status: 'superseded', leaseToken: null, leaseExpiresAt: null, lastError: 'RENDER_SUPERSEDED'});
   });
 
   it('wires invalidation into all storyboard and approved-evidence mutation transactions', () => {
