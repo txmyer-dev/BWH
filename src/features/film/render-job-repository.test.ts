@@ -58,4 +58,27 @@ describe('render job lifecycle', () => {
 
     expect(await repository.latest('project')).toMatchObject({status: 'failed', lastError: 'QUEUE_LAUNCH_FAILED'});
   });
+
+  it('supersedes only the identified pending render job', async () => {
+    const repository = new InMemoryRenderJobRepository();
+    const pending = await repository.request('pending-project');
+    const unrelated = await repository.request('unrelated-project');
+    const processing = await repository.request('processing-project');
+    const claim = await repository.claim(
+      processing.job.id,
+      'processing-project',
+      new Date('2026-07-16T12:00:00Z'),
+      1_000
+    );
+    if (claim.outcome !== 'claimed') throw new Error('expected claim');
+
+    await repository.supersedePending(pending.job.id);
+    await repository.supersedePending(processing.job.id);
+
+    expect(await repository.latest('pending-project')).toMatchObject({
+      id: pending.job.id, status: 'superseded', lastError: 'RENDER_SUPERSEDED'
+    });
+    expect(await repository.latest('unrelated-project')).toMatchObject({id: unrelated.job.id, status: 'pending'});
+    expect(await repository.latest('processing-project')).toMatchObject({id: processing.job.id, status: 'processing'});
+  });
 });

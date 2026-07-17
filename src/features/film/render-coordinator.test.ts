@@ -79,6 +79,21 @@ describe('RenderCoordinator', () => {
     expect(launcher.launch).toHaveBeenCalledTimes(1);
   });
 
+  it('retires only its new pending job when the matching render completes before launch', async () => {
+    const {coordinator, films, jobs, launcher} = setup();
+    const manifest = buildRenderManifest(source());
+    vi.spyOn(films, 'findCompleted')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({manifestHash: manifest.manifestHash, objectKey: 'projects/private/winner.mp4'});
+
+    await expect(coordinator.request(projectId)).resolves.toEqual({
+      status: 'completed', manifestHash: manifest.manifestHash, reused: true
+    });
+
+    expect(launcher.launch).not.toHaveBeenCalled();
+    expect(await jobs.latest(projectId)).toMatchObject({status: 'superseded', lastError: 'RENDER_SUPERSEDED'});
+  });
+
   it('marks a pending record failed when launch is rejected', async () => {
     const {coordinator, jobs, launcher} = setup();
     vi.mocked(launcher.launch).mockRejectedValueOnce(new Error('internal detail'));

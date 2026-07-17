@@ -26,6 +26,11 @@ export class RenderCoordinator {
 
     const requested = await this.jobs.request(projectId);
     if (requested.created) {
+      const completedAfterCreation = await this.films.findCompleted(projectId, manifest.manifestHash);
+      if (completedAfterCreation) {
+        await this.jobs.supersedePending(requested.job.id);
+        return {status: 'completed' as const, manifestHash: manifest.manifestHash, reused: true as const};
+      }
       try {
         await this.launcher.launch({projectId, jobId: requested.job.id});
       } catch {

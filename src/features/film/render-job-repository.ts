@@ -28,6 +28,7 @@ export interface RenderJobRepository {
   complete(jobId: string, leaseToken: string): Promise<void>;
   fail(jobId: string, leaseToken: string, code: string): Promise<void>;
   failPendingLaunch(jobId: string, code: string): Promise<void>;
+  supersedePending(jobId: string): Promise<void>;
   supersedeProject(projectId: string): Promise<void>;
 }
 
@@ -139,6 +140,18 @@ export class PostgresRenderJobRepository implements RenderJobRepository {
     ));
   }
 
+  async supersedePending(jobId: string) {
+    await this.database.update(processingJobs).set({
+      status: 'superseded',
+      lastError: 'RENDER_SUPERSEDED',
+      updatedAt: new Date()
+    }).where(and(
+      eq(processingJobs.id, jobId),
+      eq(processingJobs.jobType, 'render_film'),
+      eq(processingJobs.status, 'pending')
+    ));
+  }
+
   async supersedeProject(projectId: string) {
     await this.database.update(processingJobs).set({
       status: 'superseded',
@@ -206,6 +219,13 @@ export class InMemoryRenderJobRepository implements RenderJobRepository {
   async failPendingLaunch(jobId: string, code: string) {
     const row = this.rows.get(jobId);
     if (row?.status === 'pending') this.rows.set(jobId, {...row, status: 'failed', lastError: code});
+  }
+
+  async supersedePending(jobId: string) {
+    const row = this.rows.get(jobId);
+    if (row?.status === 'pending') {
+      this.rows.set(jobId, {...row, status: 'superseded', lastError: 'RENDER_SUPERSEDED'});
+    }
   }
 
   async supersedeProject(projectId: string) {
