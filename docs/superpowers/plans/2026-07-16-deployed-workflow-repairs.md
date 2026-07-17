@@ -257,13 +257,15 @@ git commit -m "fix: keep factuality provider copy consistent"
 **Files:**
 - Create: `src/features/film/render-job-repository.ts`
 - Test: `src/features/film/render-job-repository.test.ts`
+- Modify: `src/features/story/story-service.ts`
+- Modify: `src/features/story/story-invalidation.test.ts`
 
 **Interfaces:**
 - Produces:
-  - `RenderJobStatus = 'pending'|'processing'|'completed'|'failed'`
+  - `RenderJobStatus = 'pending'|'processing'|'completed'|'failed'|'superseded'`
   - `RenderJobRecord`
   - `RenderJobRepository.request(projectId): Promise<{job: RenderJobRecord; created: boolean}>`
-  - `latest(projectId)`, `claim(jobId, projectId, now, leaseMs)`, `complete(jobId, leaseToken)`, `fail(jobId, leaseToken, code)`, `failPendingLaunch(jobId, code)`.
+  - `latest(projectId)`, `claim(jobId, projectId, now, leaseMs)`, `complete(jobId, leaseToken)`, `fail(jobId, leaseToken, code)`, `failPendingLaunch(jobId, code)`, `supersedeProject(projectId)`.
 - Consumes: `processingJobs` and its existing active `(projectId, jobType)` partial unique index.
 
 - [ ] **Step 1: Write failing in-memory lifecycle tests**
@@ -293,6 +295,14 @@ describe('render job lifecycle', () => {
     await repository.claim(job.id, 'project', new Date('2026-07-16T12:00:00Z'), 1_000);
     expect((await repository.claim(job.id, 'project', new Date('2026-07-16T12:00:02Z'), 1_000)).outcome).toBe('claimed');
   });
+
+  it('keeps an old render terminal after it is superseded', async () => {
+    const repository = new InMemoryRenderJobRepository();
+    const {job} = await repository.request('project');
+    await repository.supersedeProject('project');
+    expect(await repository.latest('project')).toMatchObject({id: job.id, status: 'superseded', lastError: 'RENDER_SUPERSEDED'});
+    expect((await repository.request('project')).created).toBe(true);
+  });
 });
 ```
 
@@ -309,7 +319,7 @@ import {and, desc, eq, inArray, lte, or, sql} from 'drizzle-orm';
 import type {Database} from '../../server/db/client';
 import {processingJobs} from '../../server/db/schema';
 
-export type RenderJobStatus = 'pending'|'processing'|'completed'|'failed';
+export type RenderJobStatus = 'pending'|'processing'|'completed'|'failed'|'superseded';
 export type RenderJobRecord = {
   id: string;
   projectId: string;
@@ -332,6 +342,7 @@ export interface RenderJobRepository {
   complete(jobId: string, leaseToken: string): Promise<void>;
   fail(jobId: string, leaseToken: string, code: string): Promise<void>;
   failPendingLaunch(jobId: string, code: string): Promise<void>;
+  supersedeProject(projectId: string): Promise<void>;
 }
 
 const mapRow = (row: typeof processingJobs.$inferSelect): RenderJobRecord => ({
@@ -393,6 +404,9 @@ export class PostgresRenderJobRepository implements RenderJobRepository {
   async failPendingLaunch(jobId: string, code: string) {
     await this.database.update(processingJobs).set({status: 'failed', lastError: code, updatedAt: new Date()}).where(and(eq(processingJobs.id, jobId), eq(processingJobs.jobType, 'render_film'), eq(processingJobs.status, 'pending')));
   }
+  async supersedeProject(projectId: string) {
+    await this.database.update(processingJobs).set({status: 'superseded', leaseToken: null, leaseExpiresAt: null, lastError: 'RENDER_SUPERSEDED', updatedAt: new Date()}).where(and(eq(processingJobs.projectId, projectId), eq(processingJobs.jobType, 'render_film'), inArray(processingJobs.status, ['pending', 'processing', 'completed'])));
+  }
 }
 ```
 
@@ -426,6 +440,9 @@ export class InMemoryRenderJobRepository implements RenderJobRepository {
     const row = this.rows.get(jobId);
     if (row?.status === 'pending') this.rows.set(jobId, {...row, status: 'failed', lastError: code});
   }
+  async supersedeProject(projectId: string) {
+    for (const [id, row] of this.rows) if (row.projectId === projectId && ['pending', 'processing', 'completed'].includes(row.status)) this.rows.set(id, {...row, status: 'superseded', leaseToken: null, leaseExpiresAt: null, lastError: 'RENDER_SUPERSEDED'});
+  }
   private transition(jobId: string, leaseToken: string, status: 'completed'|'failed', lastError: string|null) {
     const row = this.rows.get(jobId);
     if (!row || row.status !== 'processing' || row.leaseToken !== leaseToken) throw new Error('RENDER_JOB_LEASE_LOST');
@@ -434,15 +451,31 @@ export class InMemoryRenderJobRepository implements RenderJobRepository {
 }
 ```
 
-- [ ] **Step 5: Run focused tests and typecheck the PostgreSQL implementation**
+- [ ] **Step 5: Supersede old render jobs in the invalidation transaction**
 
-Run: `npx vitest run src/features/film/render-job-repository.test.ts && npm run typecheck`  
+In `invalidateDownstreamStoryState()`, add this update to the same transaction that clears `projects.renderedFilmObjectKey`:
+
+```ts
+await transaction.update(processingJobs).set({
+  status: 'superseded', leaseToken: null, leaseExpiresAt: null,
+  lastError: 'RENDER_SUPERSEDED', updatedAt: new Date()
+}).where(and(
+  eq(processingJobs.projectId, projectId), eq(processingJobs.jobType, 'render_film'),
+  inArray(processingJobs.status, ['pending', 'processing', 'completed'])
+));
+```
+
+Extend `story-invalidation.test.ts` to import `processingJobs`, record its update, and assert `{status:'superseded', leaseToken:null, leaseExpiresAt:null, lastError:'RENDER_SUPERSEDED'}`. This proves the old render is retired atomically with the object-key invalidation.
+
+- [ ] **Step 6: Run focused tests and typecheck the PostgreSQL implementation**
+
+Run: `npx vitest run src/features/film/render-job-repository.test.ts src/features/story/story-invalidation.test.ts && npm run typecheck`
 Expected: PASS with no Drizzle or TypeScript errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```powershell
-git add -- src/features/film/render-job-repository.ts src/features/film/render-job-repository.test.ts
+git add -- src/features/film/render-job-repository.ts src/features/film/render-job-repository.test.ts src/features/story/story-service.ts src/features/story/story-invalidation.test.ts
 git commit -m "feat: persist asynchronous render jobs"
 ```
 
@@ -576,8 +609,10 @@ import {buildRenderManifest} from './manifest';
 import type {RenderJobLauncher} from './cloud-run-render-launcher';
 import type {RenderJobRepository} from './render-job-repository';
 
-const publicError = (error: string|null) =>
-  error === 'RENDER_JOB_LAUNCH_FAILED' ? error : error ? 'RENDER_EXECUTION_FAILED' : undefined;
+const publicError = (error: string|null) => {
+  if (error === 'RENDER_JOB_LAUNCH_FAILED' || error === 'RENDER_SUPERSEDED') return error;
+  return error ? 'RENDER_EXECUTION_FAILED' : undefined;
+};
 
 export class RenderCoordinator {
   constructor(
@@ -700,6 +735,12 @@ it('does nothing when another execution owns an unexpired lease', async () => {
   await expect(worker.run({projectId, jobId})).resolves.toBeUndefined();
   expect(render).not.toHaveBeenCalled();
 });
+
+it('does not overwrite a superseded state when edits race a render', async () => {
+  render.mockImplementationOnce(async () => { await jobs.supersedeProject(projectId); });
+  await expect(worker.run({projectId, jobId})).rejects.toThrow('RENDER_SUPERSEDED');
+  expect(await jobs.latest(projectId)).toMatchObject({status: 'superseded'});
+});
 ```
 
 - [ ] **Step 2: Run worker tests and verify RED**
@@ -726,6 +767,8 @@ export class RenderWorker {
       await this.render(projectId);
       await this.jobs.complete(jobId, claim.job.leaseToken!);
     } catch {
+      const latest = await this.jobs.latest(projectId);
+      if (latest?.id === jobId && latest.status === 'superseded') throw new Error('RENDER_SUPERSEDED');
       await this.jobs.fail(jobId, claim.job.leaseToken!, 'RENDER_EXECUTION_FAILED');
       throw new Error('RENDER_EXECUTION_FAILED');
     }
@@ -837,7 +880,7 @@ git commit -m "feat: run film rendering as a compiled worker"
 - Modify: `src/app/projects/[projectId]/page.tsx`
 
 **Interfaces:**
-- Produces: UI statuses `idle|pending|processing|ready|failed`, `applyRenderStatus()`, and `pollRenderStatus()` with `AbortSignal`.
+- Produces: UI statuses `idle|pending|processing|ready|failed|superseded`, `applyRenderStatus()`, and `pollRenderStatus()` with `AbortSignal`.
 - Consumes: POST/GET render API and the existing download API.
 
 - [ ] **Step 1: Expand the failing UI-state tests**
@@ -847,11 +890,13 @@ expect(applyRenderStatus(initialFilmUiState, {status: 'pending', jobId: 'job'}))
   .toEqual({status: 'pending', jobId: 'job', downloadUrl: null, error: null});
 expect(applyRenderStatus(initialFilmUiState, {status: 'failed', jobId: 'job', error: 'RENDER_EXECUTION_FAILED'}))
   .toEqual({status: 'failed', jobId: 'job', downloadUrl: null, error: 'RENDER_EXECUTION_FAILED'});
+expect(applyRenderStatus(initialFilmUiState, {status: 'superseded', jobId: 'job', error: 'RENDER_SUPERSEDED'}))
+  .toEqual({status: 'superseded', jobId: 'job', downloadUrl: null, error: 'RENDER_SUPERSEDED'});
 ```
 
 - [ ] **Step 2: Write failing polling tests**
 
-Use fake timers and a mocked fetch to prove pending → processing → completed stops polling, failed stops polling, `AbortController.abort()` cancels the delay, and 401/403 stops without retry.
+Use fake timers and a mocked fetch to prove pending → processing → completed stops polling, failed and superseded stop polling, `AbortController.abort()` cancels the delay, and 401/403 stops without retry.
 
 - [ ] **Step 3: Run state/polling tests and verify RED**
 
@@ -861,7 +906,7 @@ Expected: FAIL because the new status reducer and polling module do not exist.
 - [ ] **Step 4: Implement normalized state and bounded polling**
 
 ```ts
-export type RenderStatus = {status: 'idle'|'pending'|'processing'|'completed'|'failed'; jobId?: string; error?: string};
+export type RenderStatus = {status: 'idle'|'pending'|'processing'|'completed'|'failed'|'superseded'; jobId?: string; error?: string};
 
 export const pollRenderStatus = async ({load, signal, wait}: {
   load: () => Promise<RenderStatus>;
@@ -870,12 +915,12 @@ export const pollRenderStatus = async ({load, signal, wait}: {
 }) => {
   for (const delay of [1_000, 1_500, 2_000, 3_000, 5_000]) {
     const status = await load();
-    if (status.status === 'completed' || status.status === 'failed' || status.status === 'idle') return status;
+    if (status.status === 'completed' || status.status === 'failed' || status.status === 'superseded' || status.status === 'idle') return status;
     await wait(delay, signal);
   }
   while (!signal.aborted) {
     const status = await load();
-    if (status.status === 'completed' || status.status === 'failed') return status;
+    if (status.status === 'completed' || status.status === 'failed' || status.status === 'superseded') return status;
     await wait(5_000, signal);
   }
   throw new DOMException('Aborted', 'AbortError');
@@ -899,6 +944,10 @@ const finishRender = useCallback(async (status: RenderStatus) => {
   setFilmUi((current) => applyRenderStatus(current, status));
   if (status.status === 'failed') {
     setMessage('The film could not be prepared. Try again.');
+    return;
+  }
+  if (status.status === 'superseded') {
+    setMessage('Newer edits replaced this render. Prepare the gift again when you are ready.');
     return;
   }
   if (status.status !== 'completed') return;

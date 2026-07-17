@@ -64,11 +64,14 @@ The existing `processing_jobs` table will also store jobs whose `job_type` is `r
 - `pending`: accepted but not yet claimed;
 - `processing`: claimed by a job execution;
 - `completed`: MP4 stored and project render metadata committed;
-- `failed`: terminal attempt failed and a safe error code is available.
+- `failed`: terminal attempt failed and a safe error code is available;
+- `superseded`: a later storyboard, evidence, narration, or media edit made this render irrelevant.
 
 `attempt_count`, `processing_started_at`, `lease_token`, `lease_expires_at`, `last_error`, and timestamps support idempotency, stale-claim recovery, diagnostics, and controlled retry. The existing partial unique index on active project/job type prevents concurrent active renders for one project.
 
 The storyboard's deterministic render manifest and the project's `rendered_film_object_key` remain the source of truth for reuse. If an identical manifest has already completed, no Cloud Run Job is launched.
+
+Any edit that invalidates the current rendered object will atomically mark the project's existing `pending`, `processing`, or `completed` `render_film` records as `superseded`. A superseded execution cannot publish a film: the existing manifest/revision guards reject its final save, and its job record remains superseded rather than being converted back to failed or completed. A new render request creates a new job record.
 
 ### Web API
 
@@ -89,7 +92,8 @@ If job launch fails, the database record is marked failed with a safe launch err
 - `pending`;
 - `processing`;
 - `completed` with reuse metadata;
-- `failed` with a safe retryable message.
+- `failed` with a safe retryable message;
+- `superseded` with a message that newer edits replaced the old render.
 
 The existing download endpoint remains responsible for issuing a short-lived signed URL after a completed render. Render status responses will not expose private object keys or internal exception text.
 
@@ -114,7 +118,7 @@ The job process exits nonzero on failure so Cloud Run execution logs and metrics
 
 Selecting **Prepare the gift** will enqueue the render and move the UI to a queued/preparing state. The page will poll render status with bounded backoff while it is open. On completion it requests the existing signed download URL and displays the MP4 link.
 
-On page load, render status is fetched so refreshes and browser restarts resume the correct state. A terminal failure restores the action button and displays a retry option. Polling stops on completion, failure, component unmount, or authentication failure.
+On page load, render status is fetched so refreshes and browser restarts resume the correct state. A terminal failure restores the action button and displays a retry option. A superseded render never restores a download; it explains that newer edits replaced it and offers a fresh render. Polling stops on completion, failure, supersession, component unmount, or authentication failure.
 
 ## Deployment and permissions
 
@@ -144,6 +148,7 @@ Automated coverage will include:
 - UI/state tests proving persisted assets hydrate the proper slots and survive reload state;
 - copy test preventing provider-specific factuality wording outside consent disclosure;
 - render repository tests for create/reuse, active uniqueness, claiming, completion, failure, and stale-lease recovery;
+- story-invalidation tests proving edits atomically supersede old render jobs and prevent their download from resurfacing;
 - Cloud Run launcher tests for the exact job name and minimal environment overrides;
 - POST/GET render route tests for ownership, prerequisite failure, `202`, reuse, launch failure, and normalized status;
 - worker tests for claim loss, successful publication, renderer failure, cleanup, and idempotent retry;
@@ -176,5 +181,6 @@ Rollback consists of redeploying the prior service revision. The additive proces
 - One project cannot run duplicate active renders.
 - A successful job produces a private MP4 and a working short-lived download link.
 - A failed job terminates, records a safe failure, and can be retried.
+- An edit marks every relevant old render as superseded, prevents its download from resurfacing, and permits a fresh render.
 - The complete deployed browser workflow succeeds on GCP hardware without a service request timeout.
 - The render job has no idle instance cost and no public endpoint.
