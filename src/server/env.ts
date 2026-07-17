@@ -27,7 +27,7 @@ const schema = z.object({
   CLOUD_TASKS_TARGET_URL: z.string().url().optional(),
   CLOUD_TASKS_AUDIENCE: z.string().url().optional(),
   CLOUD_TASKS_SERVICE_ACCOUNT: z.string().email().optional(),
-  RENDER_JOB_NAME: z.string().default('legacy-studio-render'),
+  RENDER_JOB_NAME: z.string().min(1).default('legacy-studio-render'),
   REMOTION_BUNDLE_PATH: z.string().min(1).default('remotion-bundle'),
   REMOTION_BROWSER_EXECUTABLE: z.string().min(1).optional(),
   REMOTION_CONCURRENCY: z.coerce.number().int().positive().default(4),

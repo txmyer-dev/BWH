@@ -1,4 +1,5 @@
 import {describe, expect, it} from 'vitest';
+import {renderJobResourceName} from '../features/film/cloud-run-render-launcher';
 import {parseEnv} from './env';
 
 const requiredEnv = {
@@ -36,6 +37,16 @@ describe('parseEnv', () => {
   it('requires a production fingerprint secret and validates positive control-plane values', () => {
     expect(() => parseEnv({...requiredEnv, NODE_ENV: 'production'})).toThrow('PROVIDER_FINGERPRINT_SECRET');
     expect(() => parseEnv({...requiredEnv, PROVIDER_RUN_LEASE_MS: '0'})).toThrow();
+  });
+
+  it('resolves the default render job to a fully qualified Cloud Run resource name', () => {
+    expect(renderJobResourceName(parseEnv(requiredEnv))).toBe(
+      'projects/legacy-studio-project/locations/us-central1/jobs/legacy-studio-render'
+    );
+  });
+
+  it('rejects an explicitly empty render job name', () => {
+    expect(() => parseEnv({...requiredEnv, RENDER_JOB_NAME: ''})).toThrow('RENDER_JOB_NAME');
   });
 
   it('rejects missing required configuration', () => {
