@@ -25,6 +25,7 @@ import {
 } from '@/features/media/asset-slot-state';
 import type {Question, Storyboard} from '@/features/story/story-service';
 import type {FactualityAuditResult} from '@/features/audit/schemas';
+import {CREATOR_AUDIO_REVIEW_COPY, FACTUALITY_REVIEW_COPY} from '@/features/audit/audit-copy';
 import {beginFilmPreparation, completeFilmPreparation, initialFilmUiState} from '@/features/film/film-ui-state';
 import {canStartApproval, canUseAuditAction, shouldAcceptApprovalResponse, shouldAcceptAuditResponse} from '@/features/audit/audit-ui-state';
 import {
@@ -859,7 +860,7 @@ export default function ProjectPage({
           <button type="button" onClick={saveOrder}>Save scene order</button>
           <section className="record-card" aria-labelledby="narration-review-title">
             <h4 id="narration-review-title">Final story check</h4>
-            <p>Only the narration and the family details you approved are sent to OpenAI for this review.</p>
+            <p>{FACTUALITY_REVIEW_COPY}</p>
             <button type="button" disabled={!auditActionsAvailable || approvalPending} onClick={reviewNarration}>Review narration against the record</button>
             {audit && <>
               {audit.findings.length === 0 ? <p><strong>Ready for narration.</strong></p> : <ul>{audit.findings.map((finding, index) => <li key={`${finding.sceneId}-${index}`}>
@@ -878,7 +879,7 @@ export default function ProjectPage({
             {narrationSampleId && <button type="button" onClick={approveNarrationSample}>Approve this voice sample</button>}
             <button type="button" disabled={!narrationSampleApproved} onClick={createNarration}>Create the film narration</button>
             <p><small>{narrationProvider === 'deepgram' ? 'Narration created with a generated voice from Deepgram.' : 'Narration created with a generated voice from Microsoft Azure.'} Creator recordings are always labeled creator-provided.</small></p>
-            <details><summary>Use my own recording instead</summary><p>Your recording is transcribed with Deepgram Nova-3, then its exact transcript is checked against the approved family record by OpenAI before it can be selected.</p><input type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg" onChange={(event) => { setCreatorNarration(event.target.files?.[0] ?? null); setCreatorNarrationAssetId(null); setCreatorAudioAudit(null); }} /><button type="button" disabled={!creatorNarration} onClick={preserveCreatorNarration}>Preserve and transcribe my recording</button><button type="button" disabled={!creatorNarrationAssetId} onClick={reviewCreatorNarration}>Review its exact transcript against the record</button><button type="button" disabled={creatorAudioAudit?.status !== 'passed'} onClick={chooseCreatorNarration}>Use this creator-provided recording</button></details>
+            <details><summary>Use my own recording instead</summary><p>{CREATOR_AUDIO_REVIEW_COPY}</p><input type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/x-wav,audio/webm,audio/ogg" onChange={(event) => { setCreatorNarration(event.target.files?.[0] ?? null); setCreatorNarrationAssetId(null); setCreatorAudioAudit(null); }} /><button type="button" disabled={!creatorNarration} onClick={preserveCreatorNarration}>Preserve and transcribe my recording</button><button type="button" disabled={!creatorNarrationAssetId} onClick={reviewCreatorNarration}>Review its exact transcript against the record</button><button type="button" disabled={creatorAudioAudit?.status !== 'passed'} onClick={chooseCreatorNarration}>Use this creator-provided recording</button></details>
           </section>
           <section className="record-card film-gift" aria-labelledby="film-gift-title">
             <h4 id="film-gift-title">Prepare the gift</h4>
