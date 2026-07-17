@@ -1,7 +1,7 @@
 # Deployed Workflow Repairs Design
 
 **Date:** 2026-07-16  
-**Status:** Draft for written review  
+**Status:** Approved
 **Scope:** Repair four defects verified through the deployed GCP browser workflow.
 
 ## Problem statement
