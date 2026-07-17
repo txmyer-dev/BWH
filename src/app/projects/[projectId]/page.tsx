@@ -26,7 +26,18 @@ import {
 import type {Question, Storyboard} from '@/features/story/story-service';
 import type {FactualityAuditResult} from '@/features/audit/schemas';
 import {CREATOR_AUDIO_REVIEW_COPY, FACTUALITY_REVIEW_COPY} from '@/features/audit/audit-copy';
-import {beginFilmPreparation, completeFilmPreparation, initialFilmUiState} from '@/features/film/film-ui-state';
+import {
+  applyRenderStatus,
+  beginFilmPreparation,
+  completeFilmPreparation,
+  failFilmPreparation,
+  initialFilmUiState
+} from '@/features/film/film-ui-state';
+import {
+  abortableWait,
+  pollRenderStatus,
+  type RenderStatus
+} from '@/features/film/render-polling';
 import {canStartApproval, canUseAuditAction, shouldAcceptApprovalResponse, shouldAcceptAuditResponse} from '@/features/audit/audit-ui-state';
 import {
   displayEvidenceClaim,
@@ -113,6 +124,7 @@ export default function ProjectPage({
   const [creatorNarrationAssetId, setCreatorNarrationAssetId] = useState<string|null>(null);
   const [creatorAudioAudit, setCreatorAudioAudit] = useState<FactualityAuditResult|null>(null);
   const [filmUi, setFilmUi] = useState(initialFilmUiState);
+  const renderAbort = useRef<AbortController|null>(null);
   const auditEditGeneration = useRef(0);
   const displayedAuditId = useRef<string|null>(null);
   const approvalPendingRef = useRef(false);
@@ -157,7 +169,106 @@ export default function ProjectPage({
     }).catch(() => undefined);
   }, [projectId]);
 
-  const clearDisplayedAudit = () => { displayedAuditId.current = null; setAudit(null); setFilmUi(initialFilmUiState); };
+  const loadRenderStatus = useCallback(async (signal: AbortSignal): Promise<RenderStatus> => {
+    const response = await fetch(`/api/projects/${projectId}/render`, {signal});
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('PROJECT_FORBIDDEN');
+    }
+    if (!response.ok) throw new Error('RENDER_STATUS_FAILED');
+    return response.json() as Promise<RenderStatus>;
+  }, [projectId]);
+
+  const finishRender = useCallback(async (
+    status: RenderStatus,
+    controller: AbortController
+  ) => {
+    if (controller.signal.aborted || renderAbort.current !== controller) return;
+    setFilmUi((current) => applyRenderStatus(current, status));
+    if (status.status === 'failed') {
+      setMessage('The film could not be prepared. Try again.');
+      return;
+    }
+    if (status.status === 'superseded') {
+      setMessage('Newer edits replaced this render. Prepare the gift again when you are ready.');
+      return;
+    }
+    if (status.status !== 'completed') return;
+    const response = await fetch(`/api/projects/${projectId}/download`, {
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('DOWNLOAD_FAILED');
+    const {url} = await response.json() as {url: string};
+    if (controller.signal.aborted || renderAbort.current !== controller) return;
+    setFilmUi(completeFilmPreparation(url));
+    setMessage('Your private film is ready. The download link lasts fifteen minutes.');
+  }, [projectId]);
+
+  const handleRenderError = useCallback((
+    error: unknown,
+    controller: AbortController
+  ) => {
+    if (controller.signal.aborted || renderAbort.current !== controller) return;
+    if (error instanceof Error && error.message === 'PROJECT_FORBIDDEN') {
+      controller.abort();
+      return;
+    }
+    if (!(error instanceof Error) || error.name !== 'AbortError') {
+      setMessage('Render status could not be refreshed yet.');
+    }
+  }, []);
+
+  const watchRender = useCallback((
+    initial: RenderStatus,
+    existingController?: AbortController
+  ) => {
+    let controller = existingController;
+    if (!controller) {
+      renderAbort.current?.abort();
+      controller = new AbortController();
+      renderAbort.current = controller;
+    }
+    if (controller.signal.aborted || renderAbort.current !== controller) return;
+    setFilmUi((current) => applyRenderStatus(current, initial));
+    if (initial.status !== 'pending' && initial.status !== 'processing') {
+      void finishRender(initial, controller).catch((error) =>
+        handleRenderError(error, controller)
+      );
+      return;
+    }
+    void pollRenderStatus({
+      load: async () => {
+        const status = await loadRenderStatus(controller.signal);
+        if (!controller.signal.aborted && renderAbort.current === controller) {
+          setFilmUi((current) => applyRenderStatus(current, status));
+        }
+        return status;
+      },
+      signal: controller.signal,
+      wait: abortableWait
+    }).then((status) => finishRender(status, controller))
+      .catch((error) => handleRenderError(error, controller));
+  }, [finishRender, handleRenderError, loadRenderStatus]);
+
+  useEffect(() => {
+    renderAbort.current?.abort();
+    const controller = new AbortController();
+    renderAbort.current = controller;
+    void loadRenderStatus(controller.signal)
+      .then((status) => watchRender(status, controller))
+      .catch((error) => handleRenderError(error, controller));
+    return () => {
+      controller.abort();
+      if (renderAbort.current === controller) renderAbort.current = null;
+    };
+  }, [handleRenderError, loadRenderStatus, watchRender]);
+
+  const clearDisplayedAudit = () => {
+    renderAbort.current?.abort();
+    renderAbort.current = null;
+    displayedAuditId.current = null;
+    setAudit(null);
+    setFilmUi(initialFilmUiState);
+  };
 
   const chooseImages = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []).slice(0, 7);
@@ -452,19 +563,31 @@ export default function ProjectPage({
   const reviewCreatorNarration = async () => { if (!creatorNarrationAssetId) return; const response = await fetch(`/api/projects/${projectId}/narration/creator-audio/audit`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({assetId: creatorNarrationAssetId})}); if (!response.ok) return setMessage('The exact transcript is not ready or needs another review.'); const result = await response.json() as FactualityAuditResult; setCreatorAudioAudit(result); setMessage(result.status === 'passed' ? 'Your creator recording passed the story check.' : 'The creator recording includes wording that needs review.'); };
   const chooseCreatorNarration = async () => { if (!creatorNarrationAssetId || !creatorAudioAudit || creatorAudioAudit.status !== 'passed') return; const approved = await fetch(`/api/projects/${projectId}/narration/creator-audio/approve`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({assetId: creatorNarrationAssetId, auditId: creatorAudioAudit.auditId, narrationHash: creatorAudioAudit.narrationHash, evidenceHash: creatorAudioAudit.evidenceHash})}); if (!approved.ok) return setMessage('The transcript changed. Run a fresh story check.'); const selected = await fetch(`/api/projects/${projectId}/narration/selection`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kind: 'creator', assetId: creatorNarrationAssetId})}); setMessage(selected.ok ? 'Your creator-provided recording is selected for the film.' : 'That recording could not be selected.'); };
   const prepareFilm = async () => {
+    renderAbort.current?.abort();
+    const controller = new AbortController();
+    renderAbort.current = controller;
     setFilmUi((current) => beginFilmPreparation(current));
-    setMessage('Preparing your private Memory Film. This can take a few minutes.');
+    setMessage('Your film is queued on private rendering hardware.');
     try {
-      const rendered = await fetch(`/api/projects/${projectId}/render`, {method: 'POST'});
-      if (!rendered.ok) throw new Error('RENDER_FAILED');
-      const download = await fetch(`/api/projects/${projectId}/download`);
-      if (!download.ok) throw new Error('DOWNLOAD_FAILED');
-      const result = await download.json() as {url: string};
-      setFilmUi(completeFilmPreparation(result.url));
-      setMessage('Your Memory Film is ready to give.');
+      const response = await fetch(`/api/projects/${projectId}/render`, {
+        method: 'POST',
+        signal: controller.signal
+      });
+      if (controller.signal.aborted || renderAbort.current !== controller) return;
+      if (!response.ok) {
+        controller.abort();
+        setFilmUi(failFilmPreparation('RENDER_JOB_LAUNCH_FAILED'));
+        setMessage('The film could not be queued. Try again.');
+        return;
+      }
+      const status = await response.json() as RenderStatus;
+      if (controller.signal.aborted || renderAbort.current !== controller) return;
+      watchRender(status, controller);
     } catch {
-      setFilmUi(initialFilmUiState);
-      setMessage('The film could not be prepared yet. Your story and media are safe; check the final approvals and try again.');
+      if (controller.signal.aborted || renderAbort.current !== controller) return;
+      controller.abort();
+      setFilmUi(failFilmPreparation('RENDER_JOB_LAUNCH_FAILED'));
+      setMessage('The film could not be queued. Try again.');
     }
   };
 
@@ -884,7 +1007,9 @@ export default function ProjectPage({
           <section className="record-card film-gift" aria-labelledby="film-gift-title">
             <h4 id="film-gift-title">Prepare the gift</h4>
             <p>Turn the approved story, photographs, recordings, and narration into one private downloadable film.</p>
-            <button type="button" disabled={filmUi.status === 'preparing'} onClick={prepareFilm}>{filmUi.status === 'preparing' ? 'Preparing your film…' : 'Prepare the gift'}</button>
+            <button type="button" disabled={filmUi.status === 'pending' || filmUi.status === 'processing'} onClick={prepareFilm}>
+              {filmUi.status === 'pending' ? 'Render queued…' : filmUi.status === 'processing' ? 'Preparing your film…' : 'Prepare the gift'}
+            </button>
             {filmUi.status === 'ready' && filmUi.downloadUrl && <a className="film-download" href={filmUi.downloadUrl}>Download MP4</a>}
             <p><small>The download link is private and expires after fifteen minutes. You can prepare it again if needed.</small></p>
           </section>
