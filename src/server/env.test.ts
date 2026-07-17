@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {renderJobResourceName} from '../features/film/cloud-run-render-launcher';
-import {parseEnv} from './env';
+import {parseEnv, parseRenderWorkerEnv} from './env';
 
 const requiredEnv = {
   NODE_ENV: 'test' as const,
@@ -51,5 +51,25 @@ describe('parseEnv', () => {
 
   it('rejects missing required configuration', () => {
     expect(() => parseEnv({NODE_ENV: 'test'})).toThrow();
+  });
+});
+
+describe('parseRenderWorkerEnv', () => {
+  it('accepts production worker configuration without unrelated provider secrets', () => {
+    const env = parseRenderWorkerEnv({
+      NODE_ENV: 'production',
+      DATABASE_URL: requiredEnv.DATABASE_URL,
+      GCS_BUCKET: requiredEnv.GCS_BUCKET
+    });
+
+    expect(env).toMatchObject({
+      FACTUALITY_AUDIT_PROVIDER: 'openai',
+      OPENAI_AUDIT_MODEL: 'gpt-5.6',
+      REMOTION_BUNDLE_PATH: 'remotion-bundle',
+      REMOTION_CONCURRENCY: 4
+    });
+    expect(env).not.toHaveProperty('PROVIDER_FINGERPRINT_SECRET');
+    expect(env).not.toHaveProperty('OPENAI_API_KEY');
+    expect(env).not.toHaveProperty('GEMINI_API_KEY');
   });
 });

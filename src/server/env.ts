@@ -47,3 +47,17 @@ const schema = z.object({
 
 export const parseEnv = (input: NodeJS.ProcessEnv) => schema.parse(input);
 export type ServerEnv = z.infer<typeof schema>;
+
+const renderWorkerSchema = z.object({
+  DATABASE_URL: z.string().url(),
+  GCS_BUCKET: z.string().min(1),
+  FACTUALITY_AUDIT_PROVIDER: z.enum(['openai', 'gemini']).default('openai'),
+  GEMINI_STORY_MODEL: z.string().min(1).default('gemini-3.1-flash-lite'),
+  OPENAI_AUDIT_MODEL: z.string().min(1).default('gpt-5.6'),
+  DEEPGRAM_TRANSCRIPTION_MODEL: z.string().min(1).default('nova-3'),
+  REMOTION_BUNDLE_PATH: z.string().min(1).default('remotion-bundle'),
+  REMOTION_BROWSER_EXECUTABLE: z.string().min(1).optional(),
+  REMOTION_CONCURRENCY: z.coerce.number().int().positive().default(4)
+});
+
+export const parseRenderWorkerEnv = (input: NodeJS.ProcessEnv) => renderWorkerSchema.parse(input);

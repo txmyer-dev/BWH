@@ -16,6 +16,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=builder --chown=node:node /app/.next ./.next
 COPY --from=builder --chown=node:node /app/remotion-bundle ./remotion-bundle
+COPY --from=builder --chown=node:node /app/dist ./dist
 USER node
 EXPOSE 3000
 CMD ["npm", "start"]

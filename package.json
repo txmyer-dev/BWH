@@ -6,8 +6,9 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build && npm run film:bundle",
+    "build": "next build && npm run film:bundle && npm run worker:build",
     "film:bundle": "node scripts/build-remotion.mjs",
+    "worker:build": "node scripts/build-worker.mjs",
     "start": "next start",
     "lint": "eslint .",
     "test": "vitest run",
@@ -44,6 +45,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "drizzle-kit": "0.31.10",
+    "esbuild": "0.25.12",
     "eslint": "^9.0.0",
     "eslint-config-next": "16.2.10",
     "typescript": "^5.9.0",
