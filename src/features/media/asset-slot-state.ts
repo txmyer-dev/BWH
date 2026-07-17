@@ -36,7 +36,7 @@ export const hydrateImageSlots = (
   return slots;
 };
 
-export const mergeLocalImageDraft = <Draft>(
+export const mergeLocalImageDraft = <Draft extends {status: string}>(
   slot: ImageSlot,
   draft: Draft | undefined
-): ImageSlot | Draft => draft ?? slot;
+): ImageSlot | Draft => draft?.status === 'ready' ? slot : draft ?? slot;

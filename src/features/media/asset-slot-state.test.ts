@@ -20,12 +20,26 @@ describe('hydrateImageSlots', () => {
 
 describe('mergeLocalImageDraft', () => {
   it('prefers a local draft over a persisted slot', () => {
-    const draft = {fileName: 'replacement.jpg'};
+    const draft = {fileName: 'replacement.jpg', status: 'waiting'};
 
     expect(mergeLocalImageDraft(
       {kind: 'persisted', assetId: 'saved', status: 'ready', label: 'Saved photograph'},
       draft
     )).toBe(draft);
+  });
+
+  it('uses the refreshed persisted slot after a local upload becomes ready', () => {
+    const slot = {
+      kind: 'persisted',
+      assetId: 'uploaded',
+      status: 'processing',
+      label: 'Family portrait'
+    } as const;
+
+    expect(mergeLocalImageDraft(slot, {
+      fileName: 'family-portrait.jpg',
+      status: 'ready'
+    })).toBe(slot);
   });
 
   it('keeps the hydrated slot when there is no local draft', () => {
