@@ -2,6 +2,7 @@
 
 import {
   use,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -16,6 +17,12 @@ import {
 import type {EvidenceItem} from '@/features/evidence/schemas';
 import {processingConsentDataCategories} from '@/features/consent/processing-disclosure';
 import {durationSecondsToMs} from '@/features/media/audio-duration';
+import {
+  hydrateImageSlots,
+  mergeLocalImageDraft,
+  type ImageSlot,
+  type PersistedAssetSummary
+} from '@/features/media/asset-slot-state';
 import type {Question, Storyboard} from '@/features/story/story-service';
 import type {FactualityAuditResult} from '@/features/audit/schemas';
 import {beginFilmPreparation, completeFilmPreparation, initialFilmUiState} from '@/features/film/film-ui-state';
@@ -74,6 +81,9 @@ export default function ProjectPage({
 }) {
   const {projectId} = use(params);
   const [images, setImages] = useState<ImageDraft[]>([]);
+  const [persistedImageSlots, setPersistedImageSlots] = useState<ImageSlot[]>(
+    () => hydrateImageSlots([], 7)
+  );
   const [supportingText, setSupportingText] = useState('');
   const [sourceAudio, setSourceAudio] = useState<File | null>(null);
   const [textStatus, setTextStatus] = useState<UploadStatus>(
@@ -115,12 +125,30 @@ export default function ProjectPage({
   const orderDirty = useRef(false);
   const previewUrls = useRef<string[]>([]);
 
+  const refreshAssetInventory = useCallback(async () => {
+    const response = await fetch(
+      `/api/projects/${projectId}/assets/upload-url`
+    );
+    if (!response.ok) throw new Error('ASSET_INVENTORY_FAILED');
+    const assets = await response.json() as PersistedAssetSummary[];
+    setPersistedImageSlots(hydrateImageSlots(assets, 7));
+    return assets;
+  }, [projectId]);
+
   useEffect(
     () => () => {
       previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
     },
     []
   );
+  useEffect(() => {
+    const refreshTimer = window.setTimeout(() => {
+      void refreshAssetInventory().catch(() =>
+        setMessage('Your saved uploads could not be refreshed yet.')
+      );
+    }, 0);
+    return () => window.clearTimeout(refreshTimer);
+  }, [refreshAssetInventory]);
   useEffect(() => { storyboardRef.current = storyboard; }, [storyboard]);
   useEffect(() => {
     void fetch(`/api/projects/${projectId}/provider-runs`).then(async (response) => {
@@ -180,7 +208,10 @@ export default function ProjectPage({
           body: JSON.stringify({assetId: file.reservationId})
         }
       );
-      if (priorCompletion.ok) return;
+      if (priorCompletion.ok) {
+        await refreshAssetInventory();
+        return;
+      }
     }
     const response = await fetch(
       `/api/projects/${projectId}/assets/upload-url`,
@@ -203,6 +234,7 @@ export default function ProjectPage({
       }
     );
     if (!completed.ok) throw new Error('UPLOAD_FAILED');
+    await refreshAssetInventory();
   };
 
   const readAudioDurationMs = (file: File) => new Promise<number>((resolve, reject) => {
@@ -633,20 +665,24 @@ export default function ProjectPage({
           <div aria-label="Photograph slots">
             {Array.from({length: 7}, (_, index) => {
               const draft = images[index];
-              return draft ? (
-                <fieldset key={draft.previewUrl}>
+              const slot = mergeLocalImageDraft(
+                persistedImageSlots[index],
+                draft
+              );
+              return 'file' in slot ? (
+                <fieldset key={slot.previewUrl}>
                   <legend>Photograph {index + 1}</legend>
                   {/* The local object URL is only a thumbnail preview. */}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={draft.previewUrl} alt="Selected family photograph" width={180} />
-                  <progress value={draft.progress} max={100}>
-                    {draft.progress}%
+                  <img src={slot.previewUrl} alt="Selected family photograph" width={180} />
+                  <progress value={slot.progress} max={100}>
+                    {slot.progress}%
                   </progress>
-                  <span>{draft.status}</span>
+                  <span>{slot.status}</span>
                   <label>
                     Caption
                     <input
-                      value={draft.caption}
+                      value={slot.caption}
                       onChange={(event) =>
                         updateImage(index, {caption: event.target.value})
                       }
@@ -655,7 +691,7 @@ export default function ProjectPage({
                   <label>
                     Approximate date
                     <input
-                      value={draft.capturedAtText}
+                      value={slot.capturedAtText}
                       onChange={(event) =>
                         updateImage(index, {capturedAtText: event.target.value})
                       }
@@ -664,13 +700,17 @@ export default function ProjectPage({
                   <label>
                     Known people (comma separated)
                     <input
-                      value={draft.knownPeople}
+                      value={slot.knownPeople}
                       onChange={(event) =>
                         updateImage(index, {knownPeople: event.target.value})
                       }
                     />
                   </label>
                 </fieldset>
+              ) : slot.kind === 'persisted' ? (
+                <div key={slot.assetId} aria-label={`Saved photograph slot ${index + 1}`}>
+                  {slot.label} <span>{slot.status}</span>
+                </div>
               ) : (
                 <div key={index} aria-label={`Empty photograph slot ${index + 1}`}>
                   Photograph {index + 1} {index < 3 ? '(needed)' : '(optional)'}
