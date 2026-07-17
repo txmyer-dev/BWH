@@ -94,6 +94,38 @@ describe('RenderCoordinator', () => {
     expect(await jobs.latest(projectId)).toMatchObject({status: 'superseded', lastError: 'RENDER_SUPERSEDED'});
   });
 
+  it('fails its new pending job when the post-creation completion check throws', async () => {
+    const {coordinator, films, jobs, launcher} = setup();
+    vi.spyOn(films, 'findCompleted')
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('private database connection detail'));
+
+    await expect(coordinator.request(projectId)).rejects.toThrow('private database connection detail');
+
+    expect(launcher.launch).not.toHaveBeenCalled();
+    expect(await jobs.latest(projectId)).toMatchObject({
+      status: 'failed', lastError: 'RENDER_COMPLETION_CHECK_FAILED'
+    });
+    await expect(coordinator.status(projectId)).resolves.toMatchObject({
+      status: 'failed', error: 'RENDER_EXECUTION_FAILED'
+    });
+  });
+
+  it('does not retire a duplicate pending job it did not create', async () => {
+    const {coordinator, films, jobs, launcher} = setup();
+    const existing = await jobs.request(projectId);
+    vi.spyOn(films, 'findCompleted').mockResolvedValue(undefined);
+    const failPendingLaunch = vi.spyOn(jobs, 'failPendingLaunch');
+
+    await expect(coordinator.request(projectId)).resolves.toMatchObject({
+      jobId: existing.job.id, status: 'pending', created: false
+    });
+
+    expect(failPendingLaunch).not.toHaveBeenCalled();
+    expect(launcher.launch).not.toHaveBeenCalled();
+    expect(await jobs.latest(projectId)).toMatchObject({id: existing.job.id, status: 'pending'});
+  });
+
   it('marks a pending record failed when launch is rejected', async () => {
     const {coordinator, jobs, launcher} = setup();
     vi.mocked(launcher.launch).mockRejectedValueOnce(new Error('internal detail'));
