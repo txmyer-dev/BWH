@@ -8,4 +8,9 @@ describe('safeFilmRouteError', () => {
     expect(safeFilmRouteError(new Error('FILM_NOT_RENDERED'))).toEqual({code: 'FILM_NOT_RENDERED', status: 409});
     expect(safeFilmRouteError(new Error('secret signed url https://example.test'))).toEqual({code: 'FILM_PREPARATION_FAILED', status: 500});
   });
+
+  it('maps owner denial and render launch failure without leaking internals', () => {
+    expect(safeFilmRouteError(new Error('PROJECT_FORBIDDEN'))).toEqual({code: 'PROJECT_FORBIDDEN', status: 403});
+    expect(safeFilmRouteError(new Error('RENDER_JOB_LAUNCH_FAILED'))).toEqual({code: 'RENDER_JOB_LAUNCH_FAILED', status: 502});
+  });
 });
